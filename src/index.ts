@@ -200,7 +200,7 @@ function extractLastJsonObject(txt: string): JsonValue {
 
 export async function load(spec: string, options: LoadOptions = {}): Promise<Loaded> {
   const { root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride);
-  const manifest = readManifest(manifestPath); // TODO: Path should have / between name and version (@zack/summarize/0.1.0) <-- fix in resolveToolRoot
+  const manifest = readManifest(manifestPath);
 
   // enforce interpreter whitelist and available
   assertAllowedInterpreter(manifest.entrypoint.command);
