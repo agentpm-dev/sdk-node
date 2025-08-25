@@ -8,7 +8,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { JsonValue, load, ToolMeta } from '../src';
 import { toLangChainTool } from '../src/adapters/langchain';
 
-function makeToolPackage(baseDir: string, spec: string, scriptFile = 'tool.js') {
+function makeToolPackage(baseDir: string, spec: string, command = 'node', scriptFile = 'tool.js') {
   // spec: "@scope/name@1.2.3"
   const atIdx = spec.lastIndexOf('@');
   if (atIdx <= 0 || atIdx === spec.length - 1) {
@@ -46,7 +46,7 @@ function makeToolPackage(baseDir: string, spec: string, scriptFile = 'tool.js') 
       properties: { summary: { type: 'string' } },
       required: ['summary'],
     },
-    entrypoint: { command: 'node', args: [scriptFile], cwd: '.', timeout_ms: 30000 },
+    entrypoint: { command, args: [scriptFile], cwd: '.', timeout_ms: 30000 },
     kind: 'tool',
   };
   writeFileSync(join(root, 'agent.json'), JSON.stringify(agentJson, null, 2), 'utf8');
@@ -85,10 +85,12 @@ function makeFailingToolPackage(baseDir: string, spec: string) {
 describe('agentpm node sdk - load + toLangChainTool', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-test-'));
   const okSpec = '@zack/summarize@0.1.0';
+  const bashCommandSpec = '@zack/scrape@0.1.0';
   const failSpec = '@zack/fail@0.1.0';
 
   beforeAll(() => {
     makeToolPackage(tmp, okSpec);
+    makeToolPackage(tmp, bashCommandSpec, 'bash');
     makeFailingToolPackage(tmp, failSpec);
   });
 
@@ -104,6 +106,12 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
 
     const result = await summarize({ text: 'hello world' });
     expect(result).toEqual({ summary: 'HELLO WORLD' });
+  });
+
+  it('throws a helpful error when unsupported entrypoint command is provided', async () => {
+    await expect(load(bashCommandSpec, { toolDirOverride: tmp })).rejects.toThrow(
+      /Unsupported agent\.json\.entrypoint\.command/,
+    );
   });
 
   it('withMeta returns func + meta', async () => {
