@@ -17,7 +17,7 @@ function makeToolPackage(baseDir: string, spec: string, command = 'node', script
   const name = spec.slice(0, atIdx); // "@scope/name"
   const version = spec.slice(atIdx + 1); // "1.2.3"
 
-  const root = join(baseDir, `${name}/${version}`); // => base/@scope/name@1.2.3
+  const root = join(baseDir, `${name}/${version}`); // => base/@scope/name/1.2.3
   mkdirSync(root, { recursive: true });
 
   // Simple stdout "noise" + final JSON to test "last JSON" extraction
