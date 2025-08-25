@@ -105,7 +105,7 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
   ].filter(Boolean) as string[];
 
   for (const base of candidates) {
-    const root = join(base, `${name}@${version}`);
+    const root = join(base, `${name}/${version}`);
     const manifestPath = join(root, 'agent.json');
     if (existsSync(manifestPath)) return { root, manifestPath };
   }
