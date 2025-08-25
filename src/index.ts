@@ -105,7 +105,7 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
   ].filter(Boolean) as string[];
 
   for (const base of candidates) {
-    const root = join(base, `${name}@${version}`);
+    const root = join(base, `${name}/${version}`);
     const manifestPath = join(root, 'agent.json');
     if (existsSync(manifestPath)) return { root, manifestPath };
   }
@@ -200,7 +200,7 @@ function extractLastJsonObject(txt: string): JsonValue {
 
 export async function load(spec: string, options: LoadOptions = {}): Promise<Loaded> {
   const { root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride);
-  const manifest = readManifest(manifestPath);
+  const manifest = readManifest(manifestPath); // TODO: Path should have / between name and version (@zack/summarize/0.1.0) <-- fix in resolveToolRoot
 
   // enforce interpreter whitelist and available
   assertAllowedInterpreter(manifest.entrypoint.command);
