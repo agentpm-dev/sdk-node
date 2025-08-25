@@ -8,4 +8,6 @@ export default defineConfig({
   clean: true,
   minify: false,
   target: 'node20',
+  platform: 'node',
+  external: ['@langchain/core'],
 });
