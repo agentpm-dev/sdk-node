@@ -254,7 +254,7 @@ const tool = await toLangChainTool(loaded);
 pnpm test && pnpm build
 
 # publish (scoped packages default to private without access flag)
-npm publish --access public
+pnpm publish --access public
 ```
 
 Optional in `package.json`:

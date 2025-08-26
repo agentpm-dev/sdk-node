@@ -228,5 +228,3 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
   }
   return func;
 }
-
-// TODO: pnpm publish --access public
