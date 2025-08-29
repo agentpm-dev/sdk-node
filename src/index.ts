@@ -142,7 +142,7 @@ function findInstalled(
 }
 
 function resolveToolRoot(spec: string, toolDirOverride?: string) {
-  // spec form: @scope/name@<version or range or 'latest'
+  // spec form: @scope/name@<version or range or 'latest'>
   const atIdx = spec.lastIndexOf('@');
   if (atIdx <= 0 || atIdx === spec.length - 1) {
     throw new Error(`Invalid tool spec "${spec}". Expected "@scope/name@version".`);
