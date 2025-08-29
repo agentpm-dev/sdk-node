@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 
 export type JsonPrimitive = string | number | boolean | null;
@@ -136,72 +136,123 @@ function readManifest(path: string): Manifest {
   return m;
 }
 
+function buildEnv(
+  entryEnv: Record<string, string> = {},
+  callerEnv: Record<string, string> = {},
+  home: string,
+  tmpdir: string,
+) {
+  const base: Record<string, string> = {
+    PATH: process.env.PATH ?? '',
+    HOME: home,
+    TMPDIR: tmpdir,
+  };
+  if (process.env.LANG) base.LANG = process.env.LANG;
+  return { ...base, ...entryEnv, ...callerEnv };
+}
+
 function spawnOnce(
   root: string,
   entry: Entrypoint,
   payload: JsonValue,
   opts: { timeoutMs: number; env?: Record<string, string> },
 ): Promise<JsonValue> {
+  // 1) Tool working dir (what the tool expects for relative paths)
+  const cwd = resolve(root, entry.cwd ?? '.');
+
+  // 2) Isolated run dirs for HOME/TMPDIR
+  const runRoot = join(entry.cwd ?? '.', 'run');
+  mkdirSync(runRoot, { recursive: true });
+  const work = mkdtempSync(join(runRoot, 'run-'));
+  const home = join(work, 'home');
+  mkdirSync(home, { recursive: true });
+  const tmpd = join(work, 'tmp');
+  mkdirSync(tmpd, { recursive: true });
+
+  // 3) Command + hardening flags
+  const cmd = [entry.command, ...(entry.args ?? [])];
+  if (entry.command.startsWith('node') && !cmd.some((a) => a.startsWith('--max-old-space-size'))) {
+    cmd.splice(1, 0, '--max-old-space-size=256');
+  }
+  // NOTE: For python isolated mode, we can’t inject flags reliably from Node; rely on Python SDK for that case.
+
+  // 4) Clean env, 5) Spawn
+  const child = spawn(entry.command, cmd.slice(1), {
+    cwd,
+    env: buildEnv(entry.env ?? {}, opts.env, home, tmpd),
+    stdio: ['pipe', 'pipe', 'pipe'],
+    detached: true, // new process group on POSIX
+    windowsHide: true,
+  });
+
   return new Promise((resolveP, rejectP) => {
-    const cwd = resolve(root, entry.cwd ?? '.');
-    const args = entry.args ?? [];
-    const child = spawn(entry.command, args, {
-      cwd,
-      env: { ...process.env, ...(entry.env ?? {}), ...(opts.env ?? {}) },
-    });
-
-    let settled = false;
-    let stdout = '';
-    let stderr = '';
-
-    const timeout = setTimeout(() => {
-      if (!settled) {
-        settled = true;
-        child.kill('SIGKILL');
-        rejectP(new Error(`Tool timed out after ${opts.timeoutMs}ms`));
+    const limit = 10 * 1024 * 1024;
+    let out = '',
+      err = '';
+    const killTree = () => {
+      try {
+        process.kill(-child.pid!, 'SIGKILL');
+      } catch {
+        /* empty */
       }
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        /* empty */
+      }
+    };
+    const t = setTimeout(() => {
+      killTree();
+      rejectP(new Error(`Tool timed out after ${opts.timeoutMs}ms`));
     }, opts.timeoutMs);
 
-    child.stdout.setEncoding('utf8');
-    child.stderr.setEncoding('utf8');
+    child.stdout!.on('data', (c: Buffer | string) => {
+      out += c.toString();
+      if (Buffer.byteLength(out) + Buffer.byteLength(err) > limit) {
+        killTree();
+        clearTimeout(t);
+        rejectP(new Error('Tool produced too much output; limit is 10MB'));
+      }
+    });
 
-    child.stdout.on('data', (d) => (stdout += d));
-    child.stderr.on('data', (d) => (stderr += d));
+    child.stderr!.on('data', (c: Buffer | string) => {
+      err += c.toString();
+      if (Buffer.byteLength(out) + Buffer.byteLength(err) > limit) {
+        killTree();
+        clearTimeout(t);
+        rejectP(new Error('Tool produced too much output; limit is 10MB'));
+      }
+    });
 
-    child.on('error', (err) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      rejectP(err);
+    child.on('error', (e) => {
+      clearTimeout(t);
+      rmSync(work, { recursive: true, force: true });
+      rejectP(e);
     });
 
     child.on('close', (code) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
+      clearTimeout(t);
+      rmSync(work, { recursive: true, force: true });
       if (code !== 0) {
-        return rejectP(new Error(`Tool exited with code ${code}. Stderr:\n${stderr || '(empty)'}`));
+        const tail = err.slice(-4000);
+        rejectP(new Error(`Tool exited with code ${code}. Stderr (tail):\n${tail}`));
+        return;
       }
       try {
         // Allow tools to print non-JSON noise before/after; grab last JSON object.
-        const lastJson = extractLastJsonObject(stdout);
+        const lastJson = extractLastJsonObject(out);
         resolveP(lastJson);
-      } catch (e) {
+      } catch {
+        const tail = err.slice(-4000);
         rejectP(
           new Error(
-            `Failed to parse tool JSON output. Stderr:\n${stderr}\nStdout:\n${stdout}\nReason: ${(e as Error).message}`,
+            `Failed to parse tool JSON output.\nStderr:\n${tail}\nStdout (tail):\n${out.slice(-4000)}`,
           ),
         );
       }
     });
 
-    // write input JSON
-    try {
-      child.stdin.write(JSON.stringify(payload));
-      child.stdin.end();
-    } catch {
-      // ignore write errors, the 'close' handler will surface root cause
-    }
+    child.stdin!.end(JSON.stringify(payload));
   });
 }
 
