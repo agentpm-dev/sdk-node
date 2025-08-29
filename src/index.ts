@@ -1,6 +1,16 @@
 import { spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import {
+  readFileSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  statSync,
+  readdirSync,
+} from 'node:fs';
 import { basename, join, resolve } from 'node:path';
+
+import semver from 'semver';
 
 export type JsonPrimitive = string | number | boolean | null;
 
@@ -99,17 +109,45 @@ export function isInterpreterMatch(runtime: string, command: string): boolean {
   return !!cmds && cmds.includes(c);
 }
 
+function listInstalledVersions(base: string, name: string): string[] {
+  const out = new Set<string>();
+
+  // nested: <base>/<name>/<version>/agent.json
+  const nest = join(base, name);
+  if (existsSync(nest) && statSync(nest).isDirectory()) {
+    for (const v of readdirSync(nest)) {
+      if (!semver.valid(v)) continue;
+      if (existsSync(join(nest, v, 'agent.json'))) out.add(v);
+    }
+  }
+
+  return Array.from(out);
+}
+
 function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
   return e instanceof Error && typeof (e as { code?: unknown }).code !== 'undefined';
 }
 
+function findInstalled(
+  base: string,
+  name: string,
+  version: string,
+): { root: string; manifestPath: string } | null {
+  // exact match
+  const nested = join(base, name, version);
+  if (existsSync(join(nested, 'agent.json'))) {
+    return { root: nested, manifestPath: join(nested, 'agent.json') };
+  }
+  return null;
+}
+
 function resolveToolRoot(spec: string, toolDirOverride?: string) {
-  // spec form: "@scope/name@1.2.3"
+  // spec form: @scope/name@<version or range or 'latest'
   const atIdx = spec.lastIndexOf('@');
   if (atIdx <= 0 || atIdx === spec.length - 1) {
     throw new Error(`Invalid tool spec "${spec}". Expected "@scope/name@version".`);
   }
-  const version = spec.slice(atIdx + 1);
+  const rangeOrVersion = spec.slice(atIdx + 1).trim();
   const name = spec.slice(0, atIdx);
 
   const candidates = [
@@ -119,12 +157,43 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/tools') : undefined, // fallback
   ].filter(Boolean) as string[];
 
-  for (const base of candidates) {
-    const root = join(base, `${name}/${version}`);
-    const manifestPath = join(root, 'agent.json');
-    if (existsSync(manifestPath)) return { root, manifestPath };
+  // 1) Exact version fast-path
+  if (semver.valid(rangeOrVersion)) {
+    for (const base of candidates) {
+      const hit = findInstalled(base, name, rangeOrVersion);
+      if (hit) return hit;
+    }
+    throw new Error(`Tool "${spec}" not found in .agentpm/tools (or overrides).`);
   }
-  throw new Error(`Tool "${spec}" not found in .agentpm/tools (or overrides).`);
+
+  // 2) "latest" or a semver range
+  const isLatest = rangeOrVersion.toLowerCase() === 'latest';
+  const isRange = semver.validRange(rangeOrVersion) !== null;
+
+  if (!isLatest && !isRange) {
+    throw new Error(
+      `Invalid version/range "${rangeOrVersion}". Use exact (e.g. 0.1.2), a semver range (e.g. ^0.1), or "latest".`,
+    );
+  }
+
+  for (const base of candidates) {
+    const installed = listInstalledVersions(base, name);
+    if (installed.length === 0) continue;
+
+    const picked = isLatest
+      ? semver.rsort(installed)[0]!
+      : semver.maxSatisfying(installed, rangeOrVersion, { includePrerelease: false });
+
+    if (!picked) continue;
+
+    const hit = findInstalled(base, name, picked);
+    if (hit) return hit;
+  }
+
+  const searched = candidates.join(', ');
+  throw new Error(
+    `No installed version of "${name}" matches "${rangeOrVersion}". Searched: ${searched}`,
+  );
 }
 
 function readManifest(path: string): Manifest {
