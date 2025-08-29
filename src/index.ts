@@ -77,11 +77,26 @@ function assertInterpreterMatchesRuntime(cmd: string, runtime: Runtime) {
   const canon = canonicalInterpreter(cmd);
   const runtimeInterpreter = canonicalInterpreter(runtime.type);
 
-  if (canon !== runtimeInterpreter) {
+  if (!isInterpreterMatch(runtimeInterpreter, canon)) {
     throw new Error(
       `Misconfigured tool - agent.json.entrypoint.command "${cmd}" does not match tool runtime "${runtimeInterpreter}".`,
     );
   }
+}
+
+const ALIASES = new Map<string, ReadonlyArray<string>>([
+  ['python', ['python3']],
+  ['node', ['nodejs']],
+]);
+
+export function isInterpreterMatch(runtime: string, command: string): boolean {
+  const r = runtime.toLowerCase();
+  const c = command.toLowerCase();
+
+  if (r === c) return true;
+
+  const cmds = ALIASES.get(r);
+  return !!cmds && cmds.includes(c);
 }
 
 function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
