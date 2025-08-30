@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 
 // Import from source during dev. If you prefer, import from the package root.
-import { JsonValue, load, ToolMeta } from '../src';
+import { JsonValue, load } from '../src';
 import { toLangChainTool } from '../src/adapters/langchain';
 
 function makeToolPackage(baseDir: string, spec: string, command = 'node', scriptFile = 'tool.js') {
@@ -99,10 +99,10 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   });
 
   it('loads a tool and invokes its entrypoint returning parsed JSON', async () => {
-    const summarize = (await load(okSpec, {
+    const summarize = await load(okSpec, {
       // Use the temp tool dir we created
       toolDirOverride: tmp,
-    })) as (input: JsonValue) => Promise<JsonValue>;
+    });
 
     const result = await summarize({ text: 'hello world' });
     expect(result).toEqual({ summary: 'HELLO WORLD' });
@@ -115,10 +115,10 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   });
 
   it('withMeta returns func + meta', async () => {
-    const loaded = (await load(okSpec, {
+    const loaded = await load(okSpec, {
       withMeta: true,
       toolDirOverride: tmp,
-    })) as { func: (input: JsonValue) => Promise<JsonValue>; meta: ToolMeta };
+    });
 
     expect(typeof loaded.func).toBe('function');
     expect(loaded.meta.name).toBe('@zack/summarize');
@@ -129,10 +129,10 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   });
 
   it('toLangChainTool adapts (string in → string out) and includes rich description', async () => {
-    const loaded = (await load(okSpec, {
+    const loaded = await load(okSpec, {
       withMeta: true,
       toolDirOverride: tmp,
-    })) as { func: (x: JsonValue) => Promise<JsonValue>; meta: ToolMeta };
+    });
 
     const lcTool = await toLangChainTool(loaded);
 
@@ -146,9 +146,9 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   });
 
   it('throws a helpful error when tool exits non-zero', async () => {
-    const failing = (await load(failSpec, {
+    const failing = await load(failSpec, {
       toolDirOverride: tmp,
-    })) as (input: JsonValue) => Promise<JsonValue>;
+    });
 
     await expect(failing({})).rejects.toThrow(/exited with code 2/i);
   });

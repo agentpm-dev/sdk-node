@@ -8,7 +8,7 @@ import {
   statSync,
   readdirSync,
 } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
 import semver from 'semver';
 
@@ -109,23 +109,43 @@ export function isInterpreterMatch(runtime: string, command: string): boolean {
   return !!cmds && cmds.includes(c);
 }
 
-function listInstalledVersions(base: string, name: string): string[] {
-  const out = new Set<string>();
-
-  // nested: <base>/<name>/<version>/agent.json
-  const nest = join(base, name);
-  if (existsSync(nest) && statSync(nest).isDirectory()) {
-    for (const v of readdirSync(nest)) {
-      if (!semver.valid(v)) continue;
-      if (existsSync(join(nest, v, 'agent.json'))) out.add(v);
-    }
-  }
-
-  return Array.from(out);
-}
-
 function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
   return e instanceof Error && typeof (e as { code?: unknown }).code !== 'undefined';
+}
+
+function listInstalledVersions(base: string, name: string): string[] {
+  const seen = new Set<string>();
+  for (const nameDir of candidateNameDirs(base, name)) {
+    if (!(existsSync(nameDir) && statSync(nameDir).isDirectory())) continue;
+    for (const v of readdirSync(nameDir)) {
+      if (!semver.valid(v)) continue;
+      if (existsSync(join(nameDir, v, 'agent.json'))) seen.add(v);
+    }
+  }
+  return Array.from(seen);
+}
+
+function candidateNameDirs(base: string, name: string): string[] {
+  // Supports: "@scope/name" OR "scope/name"
+  // Tries: base/@scope/name, base/scope/name, base/scope__name, base/scope-name
+  const parts = name.split('/');
+
+  if (parts.length === 2) {
+    // Scoped: either "@scope/pkg" or "scope/pkg"
+    const rawScope = parts[0]!;
+    const pkg = parts[1]!;
+    const scope = rawScope.replace(/^@/, '');
+
+    return [
+      join(base, `@${scope}`, pkg), // with '@'
+      join(base, scope, pkg), // without '@'
+      join(base, `${scope}__${pkg}`),
+      join(base, `${scope}-${pkg}`),
+    ];
+  }
+
+  // Unscoped package
+  return [join(base, name)];
 }
 
 function findInstalled(
@@ -134,11 +154,31 @@ function findInstalled(
   version: string,
 ): { root: string; manifestPath: string } | null {
   // exact match
-  const nested = join(base, name, version);
-  if (existsSync(join(nested, 'agent.json'))) {
-    return { root: nested, manifestPath: join(nested, 'agent.json') };
+  for (const nameDir of candidateNameDirs(base, name)) {
+    const nested = join(nameDir, version);
+    const manifest = join(nested, 'agent.json');
+    if (existsSync(manifest)) {
+      return { root: nested, manifestPath: manifest };
+    }
   }
   return null;
+}
+
+function findProjectRoot(startDir: string): string {
+  let dir = resolve(startDir);
+  while (true) {
+    if (existsSync(join(dir, 'agent.json'))) return dir;
+    if (existsSync(join(dir, 'package.json'))) return dir;
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;
+    if (existsSync(join(dir, 'turbo.json'))) return dir;
+    if (existsSync(join(dir, 'lerna.json'))) return dir;
+    if (existsSync(join(dir, '.git'))) return dir;
+
+    const parent = dirname(dir);
+    if (parent === dir) break; // hit filesystem root
+    dir = parent;
+  }
+  return resolve(startDir);
 }
 
 function resolveToolRoot(spec: string, toolDirOverride?: string) {
@@ -148,12 +188,13 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
     throw new Error(`Invalid tool spec "${spec}". Expected "@scope/name@version".`);
   }
   const rangeOrVersion = spec.slice(atIdx + 1).trim();
-  const name = spec.slice(0, atIdx);
+  const name = spec.slice(1, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
 
   const candidates = [
     toolDirOverride,
     process.env.AGENTPM_TOOL_DIR, // optional override
-    resolve(process.cwd(), '.agentpm/tools'), // project-local (preferred)
+    resolve(projectRoot, '.agentpm/tools'), // project-local (preferred)
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/tools') : undefined, // fallback
   ].filter(Boolean) as string[];
 
@@ -332,6 +373,17 @@ function extractLastJsonObject(txt: string): JsonValue {
   const slice = txt.slice(idx);
   return JSON.parse(slice) as JsonValue;
 }
+
+// Overloads:
+export async function load(
+  spec: string,
+  options?: Omit<LoadOptions, 'withMeta'> & { withMeta?: false },
+): Promise<(input: JsonValue) => Promise<JsonValue>>;
+
+export async function load(
+  spec: string,
+  options: Omit<LoadOptions, 'withMeta'> & { withMeta: true },
+): Promise<{ func: (input: JsonValue) => Promise<JsonValue>; meta: ToolMeta }>;
 
 export async function load(spec: string, options: LoadOptions = {}): Promise<Loaded> {
   const { root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride);
