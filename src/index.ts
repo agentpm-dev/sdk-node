@@ -9,6 +9,8 @@ import {
   readdirSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import semver from 'semver';
 
@@ -58,6 +60,84 @@ type Loaded =
 const DEFAULT_TIMEOUT_MS = 120_000; // 2m
 const ALLOWED_INTERPRETERS = new Set(['node', 'nodejs', 'python', 'python3']);
 
+function debugEnabled(): boolean {
+  const v = process.env.AGENTPM_DEBUG || '';
+  return v !== '' && !['0', 'false', 'no'].includes(v.toLowerCase());
+}
+
+function dprint(...args: unknown[]) {
+  if (debugEnabled()) console.error('[agentpm-debug]', ...args);
+}
+
+function abbrev(s: string, n = 240) {
+  return s.length <= n ? s : s.slice(0, n) + '…';
+}
+
+function mergeEnv(
+  entryEnv?: Record<string, string>,
+  callerEnv?: Record<string, string>,
+): Record<string, string> {
+  const merged: Record<string, string> = {};
+  // copy only defined vars from process.env
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v === 'string') merged[k] = v;
+  }
+  if (entryEnv) Object.assign(merged, entryEnv);
+  if (callerEnv) Object.assign(merged, callerEnv);
+  return merged;
+}
+
+// Minimal cross-platform PATH resolver (no external deps)
+function resolveOnPath(cmd: string, envPath: string): string | null {
+  const sepList = envPath ? envPath.split(path.delimiter) : [];
+  const hasDir = cmd.includes('/') || cmd.includes('\\');
+  const pathext =
+    process.platform === 'win32'
+      ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+      : [''];
+
+  const tryFile = (full: string) => {
+    try {
+      fs.accessSync(full, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // If cmd has a slash, check it directly (and PATHEXT on Windows)
+  if (hasDir) {
+    for (const ext of pathext) {
+      const full = process.platform === 'win32' ? fullWithExt(cmd, ext) : cmd;
+      if (tryFile(full)) return full;
+    }
+    return null;
+  }
+
+  // Search each dir on PATH
+  for (const dir of sepList) {
+    if (!dir) continue;
+
+    // exact name first
+    const base = path.join(dir, cmd);
+    if (tryFile(base)) return base;
+
+    // try PATHEXT on Windows
+    if (process.platform === 'win32') {
+      for (const ext of pathext) {
+        const full = fullWithExt(base, ext);
+        if (tryFile(full)) return full;
+      }
+    }
+  }
+  return null;
+
+  function fullWithExt(p: string, ext: string) {
+    // ext already includes dot
+    return p.endsWith(ext) ? p : p + ext.toLowerCase();
+  }
+}
+
 function canonicalInterpreter(cmd: string): string {
   // handle absolute paths and Windows extensions
   const base = basename(cmd).toLowerCase();
@@ -74,12 +154,26 @@ function assertAllowedInterpreter(cmd: string) {
 }
 
 // verify the interpreter exists on PATH
-function assertInterpreterAvailable(cmd: string) {
-  const res = spawnSync(cmd, ['--version'], { stdio: 'ignore' });
-  const err = res.error;
+function assertInterpreterAvailable(
+  cmd: string,
+  entryEnv?: Record<string, string>,
+  callerEnv?: Record<string, string>,
+) {
+  const merged = mergeEnv(entryEnv, callerEnv);
 
-  if (err && isErrnoException(err) && err.code === 'ENOENT') {
-    throw new Error(`Interpreter "${cmd}" not found on PATH. Install it to load tool.`);
+  const envPath = merged.PATH ?? '';
+  const found = resolveOnPath(cmd, envPath);
+  dprint(`interpreter="${cmd}" which=${found || '<not found>'}`);
+  dprint(`MERGED PATH=${abbrev(envPath)}`);
+
+  if (!found) {
+    // As an extra signal, try a quick --version with the merged env (covers aliases/wrappers)
+    const res = spawnSync(cmd, ['--version'], { stdio: 'ignore', env: merged });
+    const enoent =
+      (res.error && (res.error as NodeJS.ErrnoException).code === 'ENOENT') || !res.pid;
+    if (enoent) {
+      throw new Error(`Interpreter "${cmd}" not found on PATH.\nChecked PATH=${merged.PATH}`);
+    }
   }
 }
 
@@ -107,10 +201,6 @@ export function isInterpreterMatch(runtime: string, command: string): boolean {
 
   const cmds = ALIASES.get(r);
   return !!cmds && cmds.includes(c);
-}
-
-function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
-  return e instanceof Error && typeof (e as { code?: unknown }).code !== 'undefined';
 }
 
 function listInstalledVersions(base: string, name: string): string[] {
@@ -190,6 +280,8 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
   const rangeOrVersion = spec.slice(atIdx + 1).trim();
   const name = spec.slice(1, atIdx);
   const projectRoot = findProjectRoot(process.cwd());
+
+  dprint(`project_root=${projectRoot}`);
 
   const candidates = [
     toolDirOverride,
@@ -386,14 +478,25 @@ export async function load(
 ): Promise<{ func: (input: JsonValue) => Promise<JsonValue>; meta: ToolMeta }>;
 
 export async function load(spec: string, options: LoadOptions = {}): Promise<Loaded> {
+  dprint(`spec=${spec}`);
+
   const { root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride);
   const manifest = readManifest(manifestPath);
 
   // enforce interpreter whitelist and available
   assertAllowedInterpreter(manifest.entrypoint.command);
-  assertInterpreterAvailable(manifest.entrypoint.command);
+  assertInterpreterAvailable(
+    manifest.entrypoint.command,
+    manifest.entrypoint.env ?? {},
+    options.env ?? {},
+  );
 
   // enforce interpreter and runtime compatability
+  const ep = manifest.entrypoint;
+  dprint(`resolved root=${root}`);
+  dprint(`manifest=${manifestPath}`);
+  dprint(`entry.command="${ep['command']}" args=${ep.args ?? []}`);
+
   if (manifest.runtime) {
     assertInterpreterMatchesRuntime(manifest.entrypoint.command, manifest.runtime);
   }
