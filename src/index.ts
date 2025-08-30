@@ -8,7 +8,9 @@ import {
   statSync,
   readdirSync,
 } from 'node:fs';
-import { basename, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import semver from 'semver';
 
@@ -58,6 +60,84 @@ type Loaded =
 const DEFAULT_TIMEOUT_MS = 120_000; // 2m
 const ALLOWED_INTERPRETERS = new Set(['node', 'nodejs', 'python', 'python3']);
 
+function debugEnabled(): boolean {
+  const v = process.env.AGENTPM_DEBUG || '';
+  return v !== '' && !['0', 'false', 'no'].includes(v.toLowerCase());
+}
+
+function dprint(...args: unknown[]) {
+  if (debugEnabled()) console.error('[agentpm-debug]', ...args);
+}
+
+function abbrev(s: string, n = 240) {
+  return s.length <= n ? s : s.slice(0, n) + '…';
+}
+
+function mergeEnv(
+  entryEnv?: Record<string, string>,
+  callerEnv?: Record<string, string>,
+): Record<string, string> {
+  const merged: Record<string, string> = {};
+  // copy only defined vars from process.env
+  for (const [k, v] of Object.entries(process.env)) {
+    if (typeof v === 'string') merged[k] = v;
+  }
+  if (entryEnv) Object.assign(merged, entryEnv);
+  if (callerEnv) Object.assign(merged, callerEnv);
+  return merged;
+}
+
+// Minimal cross-platform PATH resolver (no external deps)
+function resolveOnPath(cmd: string, envPath: string): string | null {
+  const sepList = envPath ? envPath.split(path.delimiter) : [];
+  const hasDir = cmd.includes('/') || cmd.includes('\\');
+  const pathext =
+    process.platform === 'win32'
+      ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
+      : [''];
+
+  const tryFile = (full: string) => {
+    try {
+      fs.accessSync(full, fs.constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  // If cmd has a slash, check it directly (and PATHEXT on Windows)
+  if (hasDir) {
+    for (const ext of pathext) {
+      const full = process.platform === 'win32' ? fullWithExt(cmd, ext) : cmd;
+      if (tryFile(full)) return full;
+    }
+    return null;
+  }
+
+  // Search each dir on PATH
+  for (const dir of sepList) {
+    if (!dir) continue;
+
+    // exact name first
+    const base = path.join(dir, cmd);
+    if (tryFile(base)) return base;
+
+    // try PATHEXT on Windows
+    if (process.platform === 'win32') {
+      for (const ext of pathext) {
+        const full = fullWithExt(base, ext);
+        if (tryFile(full)) return full;
+      }
+    }
+  }
+  return null;
+
+  function fullWithExt(p: string, ext: string) {
+    // ext already includes dot
+    return p.endsWith(ext) ? p : p + ext.toLowerCase();
+  }
+}
+
 function canonicalInterpreter(cmd: string): string {
   // handle absolute paths and Windows extensions
   const base = basename(cmd).toLowerCase();
@@ -74,12 +154,26 @@ function assertAllowedInterpreter(cmd: string) {
 }
 
 // verify the interpreter exists on PATH
-function assertInterpreterAvailable(cmd: string) {
-  const res = spawnSync(cmd, ['--version'], { stdio: 'ignore' });
-  const err = res.error;
+function assertInterpreterAvailable(
+  cmd: string,
+  entryEnv?: Record<string, string>,
+  callerEnv?: Record<string, string>,
+) {
+  const merged = mergeEnv(entryEnv, callerEnv);
 
-  if (err && isErrnoException(err) && err.code === 'ENOENT') {
-    throw new Error(`Interpreter "${cmd}" not found on PATH. Install it to load tool.`);
+  const envPath = merged.PATH ?? '';
+  const found = resolveOnPath(cmd, envPath);
+  dprint(`interpreter="${cmd}" which=${found || '<not found>'}`);
+  dprint(`MERGED PATH=${abbrev(envPath)}`);
+
+  if (!found) {
+    // As an extra signal, try a quick --version with the merged env (covers aliases/wrappers)
+    const res = spawnSync(cmd, ['--version'], { stdio: 'ignore', env: merged });
+    const enoent =
+      (res.error && (res.error as NodeJS.ErrnoException).code === 'ENOENT') || !res.pid;
+    if (enoent) {
+      throw new Error(`Interpreter "${cmd}" not found on PATH.\nChecked PATH=${merged.PATH}`);
+    }
   }
 }
 
@@ -110,22 +204,38 @@ export function isInterpreterMatch(runtime: string, command: string): boolean {
 }
 
 function listInstalledVersions(base: string, name: string): string[] {
-  const out = new Set<string>();
-
-  // nested: <base>/<name>/<version>/agent.json
-  const nest = join(base, name);
-  if (existsSync(nest) && statSync(nest).isDirectory()) {
-    for (const v of readdirSync(nest)) {
+  const seen = new Set<string>();
+  for (const nameDir of candidateNameDirs(base, name)) {
+    if (!(existsSync(nameDir) && statSync(nameDir).isDirectory())) continue;
+    for (const v of readdirSync(nameDir)) {
       if (!semver.valid(v)) continue;
-      if (existsSync(join(nest, v, 'agent.json'))) out.add(v);
+      if (existsSync(join(nameDir, v, 'agent.json'))) seen.add(v);
     }
   }
-
-  return Array.from(out);
+  return Array.from(seen);
 }
 
-function isErrnoException(e: unknown): e is NodeJS.ErrnoException {
-  return e instanceof Error && typeof (e as { code?: unknown }).code !== 'undefined';
+function candidateNameDirs(base: string, name: string): string[] {
+  // Supports: "@scope/name" OR "scope/name"
+  // Tries: base/@scope/name, base/scope/name, base/scope__name, base/scope-name
+  const parts = name.split('/');
+
+  if (parts.length === 2) {
+    // Scoped: either "@scope/pkg" or "scope/pkg"
+    const rawScope = parts[0]!;
+    const pkg = parts[1]!;
+    const scope = rawScope.replace(/^@/, '');
+
+    return [
+      join(base, `@${scope}`, pkg), // with '@'
+      join(base, scope, pkg), // without '@'
+      join(base, `${scope}__${pkg}`),
+      join(base, `${scope}-${pkg}`),
+    ];
+  }
+
+  // Unscoped package
+  return [join(base, name)];
 }
 
 function findInstalled(
@@ -134,11 +244,31 @@ function findInstalled(
   version: string,
 ): { root: string; manifestPath: string } | null {
   // exact match
-  const nested = join(base, name, version);
-  if (existsSync(join(nested, 'agent.json'))) {
-    return { root: nested, manifestPath: join(nested, 'agent.json') };
+  for (const nameDir of candidateNameDirs(base, name)) {
+    const nested = join(nameDir, version);
+    const manifest = join(nested, 'agent.json');
+    if (existsSync(manifest)) {
+      return { root: nested, manifestPath: manifest };
+    }
   }
   return null;
+}
+
+function findProjectRoot(startDir: string): string {
+  let dir = resolve(startDir);
+  while (true) {
+    if (existsSync(join(dir, 'agent.json'))) return dir;
+    if (existsSync(join(dir, 'package.json'))) return dir;
+    if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;
+    if (existsSync(join(dir, 'turbo.json'))) return dir;
+    if (existsSync(join(dir, 'lerna.json'))) return dir;
+    if (existsSync(join(dir, '.git'))) return dir;
+
+    const parent = dirname(dir);
+    if (parent === dir) break; // hit filesystem root
+    dir = parent;
+  }
+  return resolve(startDir);
 }
 
 function resolveToolRoot(spec: string, toolDirOverride?: string) {
@@ -148,14 +278,19 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
     throw new Error(`Invalid tool spec "${spec}". Expected "@scope/name@version".`);
   }
   const rangeOrVersion = spec.slice(atIdx + 1).trim();
-  const name = spec.slice(0, atIdx);
+  const name = spec.slice(1, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
+
+  dprint(`project_root=${projectRoot}`);
 
   const candidates = [
     toolDirOverride,
     process.env.AGENTPM_TOOL_DIR, // optional override
-    resolve(process.cwd(), '.agentpm/tools'), // project-local (preferred)
+    resolve(projectRoot, '.agentpm/tools'), // project-local (preferred)
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/tools') : undefined, // fallback
   ].filter(Boolean) as string[];
+
+  dprint('candidates:\n  ' + candidates.map((c) => String(c)).join('\n  '));
 
   // 1) Exact version fast-path
   if (semver.valid(rangeOrVersion)) {
@@ -333,13 +468,31 @@ function extractLastJsonObject(txt: string): JsonValue {
   return JSON.parse(slice) as JsonValue;
 }
 
+// Overloads:
+export async function load(
+  spec: string,
+  options?: Omit<LoadOptions, 'withMeta'> & { withMeta?: false },
+): Promise<(input: JsonValue) => Promise<JsonValue>>;
+
+export async function load(
+  spec: string,
+  options: Omit<LoadOptions, 'withMeta'> & { withMeta: true },
+): Promise<{ func: (input: JsonValue) => Promise<JsonValue>; meta: ToolMeta }>;
+
 export async function load(spec: string, options: LoadOptions = {}): Promise<Loaded> {
+  dprint(`spec=${spec}`);
+
   const { root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride);
   const manifest = readManifest(manifestPath);
 
+  const ep = manifest.entrypoint;
+  dprint(`resolved root=${root}`);
+  dprint(`manifest=${manifestPath}`);
+  dprint(`entry.command="${ep['command']}" args=${ep.args ?? []}`);
+
   // enforce interpreter whitelist and available
-  assertAllowedInterpreter(manifest.entrypoint.command);
-  assertInterpreterAvailable(manifest.entrypoint.command);
+  assertAllowedInterpreter(ep.command);
+  assertInterpreterAvailable(ep.command, ep.env ?? {}, options.env ?? {});
 
   // enforce interpreter and runtime compatability
   if (manifest.runtime) {
