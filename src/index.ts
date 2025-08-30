@@ -290,6 +290,8 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/tools') : undefined, // fallback
   ].filter(Boolean) as string[];
 
+  dprint('candidates:\n  ' + candidates.map((c) => String(c)).join('\n  '));
+
   // 1) Exact version fast-path
   if (semver.valid(rangeOrVersion)) {
     for (const base of candidates) {
@@ -483,20 +485,16 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
   const { root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride);
   const manifest = readManifest(manifestPath);
 
-  // enforce interpreter whitelist and available
-  assertAllowedInterpreter(manifest.entrypoint.command);
-  assertInterpreterAvailable(
-    manifest.entrypoint.command,
-    manifest.entrypoint.env ?? {},
-    options.env ?? {},
-  );
-
-  // enforce interpreter and runtime compatability
   const ep = manifest.entrypoint;
   dprint(`resolved root=${root}`);
   dprint(`manifest=${manifestPath}`);
   dprint(`entry.command="${ep['command']}" args=${ep.args ?? []}`);
 
+  // enforce interpreter whitelist and available
+  assertAllowedInterpreter(ep.command);
+  assertInterpreterAvailable(ep.command, ep.env ?? {}, options.env ?? {});
+
+  // enforce interpreter and runtime compatability
   if (manifest.runtime) {
     assertInterpreterMatchesRuntime(manifest.entrypoint.command, manifest.runtime);
   }
