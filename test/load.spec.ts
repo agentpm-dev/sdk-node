@@ -47,6 +47,7 @@ function makeToolPackage(baseDir: string, spec: string, command = 'node', script
       required: ['summary'],
     },
     entrypoint: { command, args: [scriptFile], cwd: '.', timeout_ms: 30000 },
+    runtime: { type: 'node', version: '20' },
     kind: 'tool',
   };
   writeFileSync(join(root, 'agent.json'), JSON.stringify(agentJson, null, 2), 'utf8');
