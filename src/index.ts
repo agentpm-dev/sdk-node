@@ -422,6 +422,8 @@ function spawnOnce(
   }
   // NOTE: For python isolated mode, we can’t inject flags reliably from Node; rely on Python SDK for that case.
 
+  dprint(`launch: argv=${cmd}`);
+  dprint(`cwd=${cwd}`);
   // 4) Clean env, 5) Spawn
   const child = spawn(entry.command, cmd.slice(1), {
     cwd,
