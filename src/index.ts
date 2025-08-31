@@ -143,6 +143,43 @@ function canonicalInterpreter(cmd: string): string {
   return base.replace(/\.(exe|cmd|bat)$/i, '');
 }
 
+const BARE_NODE = /^(node|nodejs)$/i;
+const BARE_PY = /^python(3(\.\d+)*)?$/i;
+
+function interpreterFamily(cmd: string): 'node' | 'python' | null {
+  const base = path
+    .basename(cmd)
+    .toLowerCase()
+    .replace(/\.(exe|cmd|bat)$/i, '');
+  if (BARE_NODE.test(base)) return 'node';
+  if (BARE_PY.test(base)) return 'python';
+  return null; // absolute paths still get matched by basename
+}
+
+function resolveInterpreterCommand(
+  cmd: string,
+  entryEnv?: Record<string, string>,
+  callerEnv?: Record<string, string>,
+  runtimeType?: string, // optional hint
+): string {
+  const merged = mergeEnv(entryEnv, callerEnv);
+
+  // Prefer inferring from the command; fall back to runtime hint if needed
+  const inferred = interpreterFamily(cmd);
+  const hint = runtimeType === 'node' || runtimeType === 'python' ? runtimeType : undefined;
+  const family: 'node' | 'python' | null = inferred ?? hint ?? null;
+
+  let resolved = cmd;
+  if (family === 'node' && merged.AGENTPM_NODE) {
+    dprint(`override interpreter (node): "${cmd}" -> "${merged.AGENTPM_NODE}"`);
+    resolved = merged.AGENTPM_NODE;
+  } else if (family === 'python' && merged.AGENTPM_PYTHON) {
+    dprint(`override interpreter (python): "${cmd}" -> "${merged.AGENTPM_PYTHON}"`);
+    resolved = merged.AGENTPM_PYTHON;
+  }
+  return resolved;
+}
+
 function assertAllowedInterpreter(cmd: string) {
   const canon = canonicalInterpreter(cmd);
   if (
@@ -377,7 +414,10 @@ function spawnOnce(
 
   // 3) Command + hardening flags
   const cmd = [entry.command, ...(entry.args ?? [])];
-  if (entry.command.startsWith('node') && !cmd.some((a) => a.startsWith('--max-old-space-size'))) {
+  if (
+    canonicalInterpreter(entry.command).startsWith('node') &&
+    !cmd.some((a) => a.startsWith('--max-old-space-size'))
+  ) {
     cmd.splice(1, 0, '--max-old-space-size=256');
   }
   // NOTE: For python isolated mode, we can’t inject flags reliably from Node; rely on Python SDK for that case.
@@ -492,19 +532,31 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
   dprint(`manifest=${manifestPath}`);
   dprint(`entry.command="${ep['command']}" args=${ep.args ?? []}`);
 
+  const env = ep.env ?? {};
+
+  const resolvedCmd = resolveInterpreterCommand(
+    ep.command,
+    env,
+    options.env,
+    manifest.runtime?.type,
+  );
+
   // enforce interpreter whitelist and available
-  assertAllowedInterpreter(ep.command);
-  assertInterpreterAvailable(ep.command, ep.env ?? {}, options.env ?? {});
+  assertAllowedInterpreter(resolvedCmd);
+  assertInterpreterAvailable(resolvedCmd, env, options.env ?? {});
 
   // enforce interpreter and runtime compatability
   if (manifest.runtime) {
-    assertInterpreterMatchesRuntime(manifest.entrypoint.command, manifest.runtime);
+    assertInterpreterMatchesRuntime(resolvedCmd, manifest.runtime);
   }
 
   const timeoutMs = options.timeoutMs ?? manifest.entrypoint?.timeout_ms ?? DEFAULT_TIMEOUT_MS;
 
+  // pass the resolved command to the spawner by shadowing the entry
+  const entryForSpawn = { ...manifest.entrypoint, command: resolvedCmd };
+
   const func = async (input: JsonValue) =>
-    spawnOnce(root, manifest.entrypoint, input, { timeoutMs, env: options.env });
+    spawnOnce(root, entryForSpawn, input, { timeoutMs, env: options.env });
 
   if (options.withMeta) {
     const meta: ToolMeta = {
