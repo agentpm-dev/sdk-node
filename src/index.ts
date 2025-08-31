@@ -139,14 +139,16 @@ function resolveOnPath(cmd: string, envPath: string): string | null {
 }
 
 function canonicalInterpreter(cmd: string): string {
-  // handle absolute paths and Windows extensions
   const base = basename(cmd).toLowerCase();
   return base.replace(/\.(exe|cmd|bat)$/i, '');
 }
 
 function assertAllowedInterpreter(cmd: string) {
   const canon = canonicalInterpreter(cmd);
-  if (!ALLOWED_INTERPRETERS.has(canon)) {
+  if (
+    !ALLOWED_INTERPRETERS.has(canon) &&
+    !canon.startsWith('python3') // e.g. python3.11
+  ) {
     throw new Error(
       `Unsupported agent.json.entrypoint.command "${cmd}". Allowed: node|nodejs|python|python3`,
     );
