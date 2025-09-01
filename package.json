@@ -1,6 +1,6 @@
 {
   "name": "@agentpm/sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "AgentPM Node SDK",
   "license": "MIT",
   "author": "AgentPM",
