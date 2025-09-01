@@ -46,17 +46,19 @@ jobs:
           pnpm test
           pnpm build
 
+      - name: Debug GH context
+        run: |
+          echo "REPO=$GITHUB_REPOSITORY"         # e.g. agentpm-dev/sdk-node
+          echo "OWNER=${GITHUB_REPOSITORY%%/*}"  # e.g. agentpm-dev
+          echo "REF=$GITHUB_REF"                 # e.g. refs/tags/v0.1.1
+
+      - name: Ensure modern npm
+        run: npm i -g npm@latest
+
       # -- Recommended (OIDC / Trusted Publisher + provenance) --
       # 1) Enable "Trusted publishers" for this package on npmjs.com
       # 2) Keep id-token: write above
       - name: Publish to npm (provenance, OIDC)
         env:
           NPM_CONFIG_PROVENANCE: 'true' # same as --provenance
-        run: pnpm publish --access public --no-git-checks
-
-      # -- Alternative (classic token) --
-      # - name: Publish to npm with token
-      #   env:
-      #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-      #     NPM_CONFIG_PROVENANCE: 'true'
-      #   run: pnpm publish --access public
+        run: npm publish --access public --no-git-checks
