@@ -3,6 +3,21 @@
   "version": "0.0.0",
   "description": "AgentPM Node SDK",
   "license": "MIT",
+  "author": "AgentPM",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agentpm-dev/agentpm-sdk-node.git"
+  },
+  "bugs": {
+    "url": "https://github.com/agentpm-dev/agentpm-sdk-node/issues"
+  },
+  "homepage": "https://agentpackagemanager.com/",
+  "keywords": [
+    "agentpm",
+    "agents",
+    "tools",
+    "sdk"
+  ],
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -12,14 +27,20 @@
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
       "require": "./dist/index.cjs"
-    }
+    },
+    "./package.json": "./package.json"
   },
+  "sideEffects": false,
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
   ],
   "engines": {
     "node": ">=20"
   },
+  "packageManager": "pnpm@10",
   "publishConfig": {
     "access": "public",
     "registry": "https://registry.npmjs.org/"
@@ -45,6 +66,14 @@
       "prettier --write"
     ]
   },
+  "peerDependencies": {
+    "@langchain/core": ">=0.2.0"
+  },
+  "peerDependenciesMeta": {
+    "@langchain/core": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@eslint/js": "^9.34.0",
     "@langchain/core": "^0.2.0",
@@ -65,13 +94,5 @@
     "typescript": "^5.9.2",
     "typescript-eslint": "^8.40.0",
     "vitest": "^3.2.4"
-  },
-  "peerDependencies": {
-    "@langchain/core": ">=0.2.0"
-  },
-  "peerDependenciesMeta": {
-    "@langchain/core": {
-      "optional": true
-    }
   }
 }
