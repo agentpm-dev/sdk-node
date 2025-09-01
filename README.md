@@ -251,7 +251,11 @@ const tool = await toLangChainTool(loaded);
 
 ```bash
 # ensure your exports map and files list are correct
+pnpm install
 pnpm test && pnpm build
+npm pack            # confirm the tarball contents
+npm publish --dry-run  # double-check what would be published
+
 
 # publish (scoped packages default to private without access flag)
 pnpm publish --access public

@@ -1,15 +1,15 @@
 {
   "name": "@agentpm/sdk",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "AgentPM Node SDK",
   "license": "MIT",
   "author": "AgentPM",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/agentpm-dev/agentpm-sdk-node.git"
+    "url": "git+https://github.com/agentpm-dev/sdk-node.git"
   },
   "bugs": {
-    "url": "https://github.com/agentpm-dev/agentpm-sdk-node/issues"
+    "url": "https://github.com/agentpm-dev/sdk-node/issues"
   },
   "homepage": "https://agentpackagemanager.com/",
   "keywords": [
