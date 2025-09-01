@@ -11,9 +11,9 @@ export default tseslint.config(
   {
     plugins: { import: importPlugin },
     rules: {
-      'import/order': ['warn', { 'newlines-between': 'always' }]
-    }
+      'import/order': ['warn', { 'newlines-between': 'always' }],
+    },
   },
   // must be last: turns off rules that conflict with Prettier
-  prettier
+  prettier,
 );
