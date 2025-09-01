@@ -16,11 +16,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Setup Node (npm registry + cache)
         uses: actions/setup-node@v4
@@ -52,7 +52,7 @@ jobs:
       - name: Publish to npm (provenance, OIDC)
         env:
           NPM_CONFIG_PROVENANCE: 'true' # same as --provenance
-        run: pnpm publish --access public
+        run: pnpm publish --access public --no-git-checks
 
       # -- Alternative (classic token) --
       # - name: Publish to npm with token
