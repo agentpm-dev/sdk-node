@@ -1,0 +1,62 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: read
+  id-token: write # required for npm provenance / trusted publishing
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node (npm registry + cache)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: pnpm
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: Install deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify tag matches package.json version
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          if [ "$TAG" != "$PKG_VERSION" ]; then
+            echo "Tag v$TAG does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
+
+      - name: Test & Build
+        run: |
+          pnpm test
+          pnpm build
+
+      # -- Recommended (OIDC / Trusted Publisher + provenance) --
+      # 1) Enable "Trusted publishers" for this package on npmjs.com
+      # 2) Keep id-token: write above
+      - name: Publish to npm (provenance, OIDC)
+        env:
+          NPM_CONFIG_PROVENANCE: 'true' # same as --provenance
+        run: pnpm publish --access public
+
+      # -- Alternative (classic token) --
+      # - name: Publish to npm with token
+      #   env:
+      #     NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      #     NPM_CONFIG_PROVENANCE: 'true'
+      #   run: pnpm publish --access public
