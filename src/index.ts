@@ -7,10 +7,12 @@ import {
   rmSync,
   statSync,
   readdirSync,
+  writeFileSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 import fs from 'node:fs';
 import path from 'node:path';
+import { platform } from 'node:os';
 
 import semver from 'semver';
 
@@ -56,6 +58,10 @@ export type LoadOptions = {
 type Loaded =
   | ((input: JsonValue) => Promise<JsonValue>)
   | { func: (input: JsonValue) => Promise<JsonValue>; meta: ToolMeta };
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const GRACE_AFTER_JSON = 400; // ms
+const KILL_AFTER_TERM = 150; // ms
 
 const DEFAULT_TIMEOUT_MS = 120_000; // 2m
 const ALLOWED_INTERPRETERS = new Set(['node', 'nodejs', 'python', 'python3']);
@@ -394,6 +400,28 @@ function buildEnv(
   return { ...base, ...entryEnv, ...callerEnv };
 }
 
+function isPythonCmd(cmd0: string) {
+  const base = path.basename(cmd0).toLowerCase();
+  return base === 'py' || base.startsWith('python');
+}
+
+function ensureUnbufferedPython(cmd: string[], env: Record<string, string | undefined>) {
+  if (cmd.length === 0) return { cmd: [], env };
+
+  // Non-null assert + concrete types
+  const interp: string = cmd[0]!;
+  const rest: string[] = cmd.slice(1) as string[];
+
+  if (!isPythonCmd(interp)) {
+    return { cmd: [interp, ...rest], env };
+  }
+
+  const hasDashU = rest.includes('-u');
+  const nextEnv: NodeJS.ProcessEnv = { ...env, PYTHONUNBUFFERED: env.PYTHONUNBUFFERED ?? '1' };
+  const newCmd: string[] = hasDashU ? [interp, ...rest] : [interp, '-u', ...rest];
+  return { cmd: newCmd, env: nextEnv };
+}
+
 function spawnOnce(
   root: string,
   entry: Entrypoint,
@@ -412,8 +440,13 @@ function spawnOnce(
   const tmpd = join(work, 'tmp');
   mkdirSync(tmpd, { recursive: true });
 
+  const isWin = platform() === 'win32';
+
   // 3) Command + hardening flags
-  const cmd = [entry.command, ...(entry.args ?? [])];
+  const { cmd, env } = ensureUnbufferedPython(
+    [entry.command, ...(entry.args ?? [])],
+    buildEnv(entry.env ?? {}, opts.env, home, tmpd),
+  );
   if (
     canonicalInterpreter(entry.command).startsWith('node') &&
     !cmd.some((a) => a.startsWith('--max-old-space-size'))
@@ -427,89 +460,225 @@ function spawnOnce(
   // 4) Clean env, 5) Spawn
   const child = spawn(entry.command, cmd.slice(1), {
     cwd,
-    env: buildEnv(entry.env ?? {}, opts.env, home, tmpd),
+    env,
     stdio: ['pipe', 'pipe', 'pipe'],
-    detached: true, // new process group on POSIX
+    detached: !isWin, // new process group on POSIX
     windowsHide: true,
   });
 
   return new Promise((resolveP, rejectP) => {
-    const limit = 10 * 1024 * 1024;
-    let out = '',
-      err = '';
-    const killTree = () => {
-      try {
-        process.kill(-child.pid!, 'SIGKILL');
-      } catch {
-        /* empty */
-      }
-      try {
-        child.kill('SIGKILL');
-      } catch {
-        /* empty */
-      }
-    };
-    const t = setTimeout(() => {
-      killTree();
-      rejectP(new Error(`Tool timed out after ${opts.timeoutMs}ms`));
+    let totalBytes = 0;
+    let out = ''; // full stdout (for diagnostics)
+    let err = '';
+    let parsed: unknown | null = null;
+    let sentTERM = false;
+    let sentKILL = false;
+
+    // --- Timers ---
+    const timeout = setTimeout(() => {
+      killTree(child, true);
+      rejectOnce(new Error(`Tool timed out after ${opts.timeoutMs}ms`));
     }, opts.timeoutMs);
 
-    child.stdout!.on('data', (c: Buffer | string) => {
-      out += c.toString();
-      if (Buffer.byteLength(out) + Buffer.byteLength(err) > limit) {
-        killTree();
-        clearTimeout(t);
-        rejectP(new Error('Tool produced too much output; limit is 10MB'));
+    let graceTimer: NodeJS.Timeout | null = null;
+    function startGrace() {
+      if (graceTimer) return;
+      graceTimer = setTimeout(() => {
+        if (child.exitCode == null) {
+          killTree(child, false);
+          sentTERM = true;
+          setTimeout(() => {
+            if (child.exitCode == null) {
+              killTree(child, true);
+              sentKILL = true;
+            }
+          }, KILL_AFTER_TERM);
+        }
+      }, GRACE_AFTER_JSON);
+    }
+
+    const incr = extractFirstJsonIncremental();
+
+    const rejectOnce = (e: Error) => {
+      clearTimeout(timeout);
+      if (graceTimer) clearTimeout(graceTimer);
+      // Persist logs on error and KEEP run dir
+      try {
+        writeFileSync(join(work, 'child.stdout'), out, 'utf8');
+        writeFileSync(join(work, 'child.stderr'), err, 'utf8');
+      } catch {
+        /* empty */
+      }
+      rejectP(e);
+    };
+
+    // ---- wire streams ----
+    child.stdout!.setEncoding('utf8');
+    child.stderr!.setEncoding('utf8');
+
+    child.stdout!.on('data', (c: string) => {
+      out += c;
+      totalBytes += Buffer.byteLength(c);
+      if (totalBytes > MAX_BYTES) {
+        killTree(child, true);
+        return rejectOnce(new Error('Tool produced too much output; limit is 10MB'));
+      }
+      if (parsed == null) {
+        const got = incr.push(c);
+        if (got != null) {
+          parsed = got;
+          startGrace(); // start grace-after-JSON window
+        }
       }
     });
 
-    child.stderr!.on('data', (c: Buffer | string) => {
-      err += c.toString();
-      if (Buffer.byteLength(out) + Buffer.byteLength(err) > limit) {
-        killTree();
-        clearTimeout(t);
-        rejectP(new Error('Tool produced too much output; limit is 10MB'));
+    child.stderr!.on('data', (c: string) => {
+      err += c;
+      totalBytes += Buffer.byteLength(c);
+      // TODO:
+      // if (opts.verbose) {
+      //   // tee to host logs if desired
+      //   for (const line of c.split(/\r?\n/)) {
+      //     if (line) console.error(`[tool] ${line}`);
+      //   }
+      // }
+      if (totalBytes > MAX_BYTES) {
+        killTree(child, true);
+        return rejectOnce(new Error('Tool produced too much output; limit is 10MB'));
       }
     });
 
     child.on('error', (e) => {
-      clearTimeout(t);
-      rmSync(work, { recursive: true, force: true });
-      rejectP(e);
+      rejectOnce(e as Error);
     });
 
     child.on('close', (code) => {
-      clearTimeout(t);
-      rmSync(work, { recursive: true, force: true });
-      if (code !== 0) {
-        const tail = err.slice(-4000);
-        rejectP(new Error(`Tool exited with code ${code}. Stderr (tail):\n${tail}`));
-        return;
+      clearTimeout(timeout);
+      if (graceTimer) clearTimeout(graceTimer);
+
+      const runnerForcedExit = sentTERM || sentKILL;
+
+      // Prefer the streaming-parsed JSON; if none and exit 0, last-chance parse
+      if (parsed == null && code === 0) {
+        try {
+          parsed = JSON.parse(out.trim());
+        } catch {
+          // keep run dir for inspection
+          // TODO:
+          // try {
+          //   writeFileSync(join(workDir, "child.stdout"), out, "utf8");
+          //   writeFileSync(join(workDir, "child.stderr"), err, "utf8");
+          // } catch {}
+          return rejectP(
+            new Error(`Failed to parse tool JSON output.\nStderr:\n${err}\nStdout:\n${out}`),
+          );
+        }
       }
-      try {
-        // Allow tools to print non-JSON noise before/after; grab last JSON object.
-        const lastJson = extractLastJsonObject(out);
-        resolveP(lastJson);
-      } catch {
+
+      if (code !== 0 && !runnerForcedExit) {
+        // Child failed on its own → persist logs & raise
+        try {
+          writeFileSync(join(work, 'child.stdout'), out, 'utf8');
+          writeFileSync(join(work, 'child.stderr'), err, 'utf8');
+        } catch {
+          /* empty */
+        }
         const tail = err.slice(-4000);
-        rejectP(
-          new Error(
-            `Failed to parse tool JSON output.\nStderr:\n${tail}\nStdout (tail):\n${out.slice(-4000)}`,
-          ),
+        return rejectP(new Error(`Tool exited with code ${code}. Stderr (tail):\n${tail}`));
+      }
+
+      if (parsed == null) {
+        // Shouldn't happen if we killed after JSON; keep logs
+        // TODO:
+        // try {
+        //   writeFileSync(join(workDir, "child.stdout"), out, "utf8");
+        //   writeFileSync(join(workDir, "child.stderr"), err, "utf8");
+        // } catch {
+        // }
+        return rejectP(
+          new Error(`Tool did not produce valid JSON.\nStderr:\n${err}\nStdout:\n${out}`),
         );
       }
+
+      // Success: cleanup and return parsed JSON
+      try {
+        rmSync(work, { recursive: true, force: true });
+      } catch {
+        /* empty */
+      }
+      resolveP(parsed);
     });
 
-    child.stdin!.end(JSON.stringify(payload));
+    try {
+      child.stdin!.end(JSON.stringify(payload));
+    } catch {
+      // ignore; child may have already died
+    }
   });
 }
 
-function extractLastJsonObject(txt: string): JsonValue {
-  // naive but effective: scan for last '{' and try JSON.parse from there.
-  const idx = txt.lastIndexOf('{');
-  if (idx < 0) throw new Error('No JSON object found on stdout.');
-  const slice = txt.slice(idx);
-  return JSON.parse(slice) as JsonValue;
+function extractFirstJsonIncremental() {
+  let buf = '';
+  let depth = 0;
+  let start = -1;
+  return {
+    push(chunk: string): unknown | null {
+      buf += chunk;
+      for (let i = 0; i < chunk.length; i++) {
+        const ch = buf.charAt(buf.length - chunk.length + i);
+        if (ch === '{') {
+          if (depth === 0) start = buf.length - chunk.length + i;
+          depth++;
+        } else if (ch === '}') {
+          if (depth > 0) {
+            depth--;
+            if (depth === 0 && start >= 0) {
+              const slice = buf.slice(start, buf.length - chunk.length + i + 1);
+              try {
+                return JSON.parse(slice);
+              } catch {
+                // keep scanning
+              }
+            }
+          }
+        }
+      }
+      return null;
+    },
+    fullText() {
+      return buf;
+    },
+  };
+}
+
+function killTree(child: import('node:child_process').ChildProcess, hard = false) {
+  try {
+    if (platform() === 'win32') {
+      // Best-effort: taskkill the whole tree
+      spawnSync('taskkill', ['/PID', String(child.pid), '/T', hard ? '/F' : ''].filter(Boolean), {
+        stdio: 'ignore',
+      });
+      try {
+        child.kill(hard ? 'SIGKILL' : 'SIGTERM');
+      } catch {
+        /* empty */
+      }
+    } else {
+      // POSIX: send to process group (we use detached: true)
+      try {
+        process.kill(-child.pid!, hard ? 'SIGKILL' : 'SIGTERM');
+      } catch {
+        /* empty */
+      }
+      try {
+        child.kill(hard ? 'SIGKILL' : 'SIGTERM');
+      } catch {
+        /* empty */
+      }
+    }
+  } catch {
+    /* empty */
+  }
 }
 
 // Overloads:
