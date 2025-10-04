@@ -606,7 +606,7 @@ function spawnOnce(
       } catch {
         /* empty */
       }
-      resolveP(parsed);
+      resolveP(parsed as JsonValue);
     });
 
     try {
