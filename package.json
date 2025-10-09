@@ -1,9 +1,9 @@
 {
   "name": "@agentpm/sdk",
   "version": "0.1.2",
-  "description": "AgentPM Node SDK",
+  "description": "AgentPM™ Node SDK",
   "license": "MIT",
-  "author": "AgentPM",
+  "author": "AgentPM™",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/agentpm-dev/sdk-node.git"
