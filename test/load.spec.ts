@@ -126,9 +126,6 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
     const summarize = await load(okSpec, {
       // Use the temp tool dir we created
       toolDirOverride: tmp,
-      env: {
-        OPENAI_API_KEY: 'Zack',
-      },
     });
 
     const result = await summarize({ text: 'hello world' });
