@@ -8,7 +8,13 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { JsonValue, load } from '../src';
 import { toLangChainTool } from '../src/adapters/langchain';
 
-function makeToolPackage(baseDir: string, spec: string, command = 'node', scriptFile = 'tool.js') {
+function makeToolPackage(
+  baseDir: string,
+  spec: string,
+  command = 'node',
+  scriptFile = 'tool.js',
+  withEnv = false,
+) {
   // spec: "@scope/name@1.2.3"
   const atIdx = spec.lastIndexOf('@');
   if (atIdx <= 0 || atIdx === spec.length - 1) {
@@ -49,6 +55,21 @@ function makeToolPackage(baseDir: string, spec: string, command = 'node', script
     entrypoint: { command, args: [scriptFile], cwd: '.', timeout_ms: 30000 },
     runtime: { type: 'node', version: '20' },
     kind: 'tool',
+    environment: withEnv
+      ? {
+          vars: {
+            OPENAI_API_KEY: {
+              required: true,
+              description: 'API key for OpenAI',
+            },
+            OPENAI_BASE_URL: {
+              required: false,
+              description: 'Custom API endpoint; defaults to https://api.openai.com/v1',
+              default: 'https://api.openai.com/v1',
+            },
+          },
+        }
+      : undefined,
   };
   writeFileSync(join(root, 'agent.json'), JSON.stringify(agentJson, null, 2), 'utf8');
 
@@ -88,11 +109,13 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   const okSpec = '@zack/summarize@0.1.0';
   const bashCommandSpec = '@zack/scrape@0.1.0';
   const failSpec = '@zack/fail@0.1.0';
+  const withEnvSpec = '@zack/with-env@0.1.0';
 
   beforeAll(() => {
     makeToolPackage(tmp, okSpec);
     makeToolPackage(tmp, bashCommandSpec, 'bash');
     makeFailingToolPackage(tmp, failSpec);
+    makeToolPackage(tmp, withEnvSpec, undefined, undefined, true);
   });
 
   afterAll(() => {
@@ -103,6 +126,9 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
     const summarize = await load(okSpec, {
       // Use the temp tool dir we created
       toolDirOverride: tmp,
+      env: {
+        OPENAI_API_KEY: 'Zack',
+      },
     });
 
     const result = await summarize({ text: 'hello world' });
@@ -152,5 +178,13 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
     });
 
     await expect(failing({})).rejects.toThrow(/exited with code 2/i);
+  });
+
+  it('throws a helpful error when required env variables are missing', async () => {
+    await expect(
+      load(withEnvSpec, {
+        toolDirOverride: tmp,
+      }),
+    ).rejects.toThrow(/Missing environment variable: OPENAI_API_KEY/i);
   });
 });
