@@ -28,6 +28,7 @@ export type ToolMeta = {
   inputs?: JsonValue;
   outputs?: JsonValue;
   runtime?: Runtime;
+  environment?: Environment;
 };
 
 type Runtime = {
@@ -43,8 +44,16 @@ type Entrypoint = {
   env?: Record<string, string>;
 };
 
+type EnvVar = {
+  required: boolean;
+  description: string;
+  default?: string;
+};
+type Environment = { vars?: Record<string, EnvVar> };
+
 type Manifest = ToolMeta & {
   entrypoint: Entrypoint;
+  environment?: Environment;
 };
 
 export type LoadOptions = {
@@ -705,6 +714,26 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
 
   const env = ep.env ?? {};
 
+  // enforce expected/required environment
+  const expectedEnv = manifest.environment;
+  const varsObj = expectedEnv?.vars ?? {};
+  const hasVars = varsObj && typeof varsObj === 'object' && Object.values(varsObj).length > 0;
+  if (hasVars) {
+    dprint(`tool-defined environment=${JSON.stringify(manifest.environment)}`);
+
+    Object.entries(varsObj).forEach(([k, v]) => {
+      if (v.required && !v.default && (!options.env || !(k in options.env))) {
+        throw new Error(
+          `Missing environment variable: ${k}. ${k} is required and has no default value.`,
+        );
+      } else if (v.default && (!options.env || !(k in options.env))) {
+        // set default
+        options.env = options.env || {};
+        options.env[k] = v.default;
+      }
+    });
+  }
+
   const resolvedCmd = resolveInterpreterCommand(
     ep.command,
     env,
@@ -736,6 +765,7 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
       description: manifest.description,
       inputs: manifest.inputs,
       outputs: manifest.outputs,
+      environment: manifest.environment,
     };
     return { func, meta };
   }
