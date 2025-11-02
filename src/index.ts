@@ -28,6 +28,7 @@ export type ToolMeta = {
   inputs?: JsonValue;
   outputs?: JsonValue;
   runtime?: Runtime;
+  environment?: Environment;
 };
 
 type Runtime = {
@@ -764,6 +765,7 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
       description: manifest.description,
       inputs: manifest.inputs,
       outputs: manifest.outputs,
+      environment: manifest.environment,
     };
     return { func, meta };
   }

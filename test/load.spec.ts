@@ -152,6 +152,22 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
     expect(out['summary']).toBe('ABC');
   });
 
+  it('withMeta returns func + meta with environment', async () => {
+    const loaded = await load(withEnvSpec, {
+      withMeta: true,
+      toolDirOverride: tmp,
+      env: {
+        OPENAI_API_KEY: 'Zack',
+      },
+    });
+
+    expect(typeof loaded.func).toBe('function');
+    expect(loaded.meta.environment).toBeDefined();
+
+    const out = (await loaded.func({ text: 'abc' })) as { [key: string]: JsonValue };
+    expect(out['summary']).toBe('ABC');
+  });
+
   it('toLangChainTool adapts (string in → string out) and includes rich description', async () => {
     const loaded = await load(okSpec, {
       withMeta: true,
