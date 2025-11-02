@@ -1,4 +1,4 @@
-# AgentPM Node SDK
+# AgentPM™ Node SDK
 
 A lean, framework-agnostic **Node.js SDK** for running **AgentPM** tools from your app or agent runtime.
 
