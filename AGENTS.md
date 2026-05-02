@@ -88,17 +88,17 @@ Example:
 ## Do / Don’t
 
 - Don’t change `load()` behavior casually.
-  - Do treat it as the primary public API surface and verify the end-to-end contract.
+  Do treat it as the primary public API surface and verify the end-to-end contract.
 - Don’t weaken subprocess or env semantics by accident.
-  - Do trace changes through interpreter checks, env merging, stdin/stdout handling, and exit behavior.
+  Do trace changes through interpreter checks, env merging, stdin/stdout handling, and exit behavior.
 - Don’t let optional adapters become hidden core requirements.
-  - Do keep adapter-specific logic isolated and package metadata explicit.
+  Do keep adapter-specific logic isolated and package metadata explicit.
 - Don’t change npm export or build output shape casually.
-  - Do treat ESM/CJS/types behavior as part of the public package contract.
+  Do treat ESM/CJS/types behavior as part of the public package contract.
 - Don’t let README examples drift from the actual SDK usage model.
-  - Do update usage docs when imports, options, or calling conventions change.
+  Do update usage docs when imports, options, or calling conventions change.
 - Don’t casually change stdout parsing behavior.
-  - Do preserve the final-JSON result contract and update tests if parsing behavior changes.
+  Do preserve the final-JSON result contract and update tests if parsing behavior changes.
 
 ## Verification
 
