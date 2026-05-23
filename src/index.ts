@@ -21,6 +21,13 @@ export type JsonPrimitive = string | number | boolean | null;
 // Recursive JSON value
 export type JsonValue = JsonPrimitive | { [key: string]: JsonValue } | JsonValue[];
 
+export type DependencyReference =
+  | string
+  | {
+      name: string;
+      version?: string;
+    };
+
 export type ToolMeta = {
   name: string;
   version: string;
@@ -29,6 +36,19 @@ export type ToolMeta = {
   outputs?: JsonValue;
   runtime?: Runtime;
   environment?: Environment;
+};
+
+export type AgentMeta = {
+  kind: 'agent';
+  name: string;
+  version: string;
+  description?: string;
+  tools?: DependencyReference[];
+  examples?: JsonValue[];
+  skills?: DependencyReference[];
+  knowledge?: DependencyReference[];
+  memory?: DependencyReference[];
+  profiles?: DependencyReference[];
 };
 
 type Runtime = {
@@ -56,6 +76,8 @@ type Manifest = ToolMeta & {
   environment?: Environment;
 };
 
+type AgentManifest = AgentMeta;
+
 export type LoadOptions = {
   withMeta?: boolean;
   // optional overrides
@@ -64,9 +86,60 @@ export type LoadOptions = {
   env?: Record<string, string>; // merged into process env
 };
 
+export type LoadAgentOptions = {
+  agentDirOverride?: string;
+  toolDirOverride?: string;
+  lockfileOverride?: string;
+};
+
 type Loaded =
   | ((input: JsonValue) => Promise<JsonValue>)
   | { func: (input: JsonValue) => Promise<JsonValue>; meta: ToolMeta };
+
+export type ResolvedAgentToolRef = {
+  packageKey: string;
+  kind: 'tool';
+  name: string;
+  version: string;
+  integrity: string;
+  root: string | null;
+  manifestPath: string | null;
+};
+
+export type ReservedReferences = {
+  skills: DependencyReference[];
+  knowledge: DependencyReference[];
+  memory: DependencyReference[];
+  profiles: DependencyReference[];
+};
+
+export type LoadedAgent = {
+  root: string;
+  manifestPath: string;
+  manifest: AgentManifest;
+  resolvedTools: ResolvedAgentToolRef[];
+  reserved: ReservedReferences;
+};
+
+type LockedPackage = {
+  kind: string;
+  name: string;
+  version: string;
+  integrity: string;
+};
+
+type LockedRoot = {
+  name?: string;
+  version?: string;
+  tools?: string[];
+  reserved?: Partial<ReservedReferences>;
+};
+
+type LockfileV2 = {
+  lockfile_version: number;
+  packages?: Record<string, LockedPackage>;
+  roots?: Record<string, LockedRoot>;
+};
 
 const MAX_BYTES = 10 * 1024 * 1024;
 const GRACE_AFTER_JSON = 400; // ms
@@ -332,7 +405,7 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
     throw new Error(`Invalid tool spec "${spec}". Expected "@scope/name@version".`);
   }
   const rangeOrVersion = spec.slice(atIdx + 1).trim();
-  const name = spec.slice(1, atIdx);
+  const name = spec.slice(0, atIdx);
   const projectRoot = findProjectRoot(process.cwd());
 
   dprint(`project_root=${projectRoot}`);
@@ -385,6 +458,58 @@ function resolveToolRoot(spec: string, toolDirOverride?: string) {
   );
 }
 
+function resolveAgentRoot(spec: string, agentDirOverride?: string) {
+  const atIdx = spec.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === spec.length - 1) {
+    throw new Error(`Invalid agent spec "${spec}". Expected "@scope/name@version".`);
+  }
+  const rangeOrVersion = spec.slice(atIdx + 1).trim();
+  const name = spec.slice(0, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
+
+  const candidates = [
+    agentDirOverride,
+    process.env.AGENTPM_AGENT_DIR,
+    resolve(projectRoot, '.agentpm/agents'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/agents') : undefined,
+  ].filter(Boolean) as string[];
+
+  if (semver.valid(rangeOrVersion)) {
+    for (const base of candidates) {
+      const hit = findInstalled(base, name, rangeOrVersion);
+      if (hit) return hit;
+    }
+    throw new Error(`Agent "${spec}" not found in .agentpm/agents (or overrides).`);
+  }
+
+  const isLatest = rangeOrVersion.toLowerCase() === 'latest';
+  const isRange = semver.validRange(rangeOrVersion) !== null;
+  if (!isLatest && !isRange) {
+    throw new Error(
+      `Invalid version/range "${rangeOrVersion}". Use exact (e.g. 0.1.2), a semver range (e.g. ^0.1), or "latest".`,
+    );
+  }
+
+  for (const base of candidates) {
+    const installed = listInstalledVersions(base, name);
+    if (installed.length === 0) continue;
+
+    const picked = isLatest
+      ? semver.rsort(installed)[0]!
+      : semver.maxSatisfying(installed, rangeOrVersion, { includePrerelease: false });
+
+    if (!picked) continue;
+
+    const hit = findInstalled(base, name, picked);
+    if (hit) return hit;
+  }
+
+  const searched = candidates.join(', ');
+  throw new Error(
+    `No installed version of "${name}" matches "${rangeOrVersion}". Searched: ${searched}`,
+  );
+}
+
 function readManifest(path: string): Manifest {
   const raw = readFileSync(path, 'utf-8');
   const m = JSON.parse(raw);
@@ -392,6 +517,60 @@ function readManifest(path: string): Manifest {
     throw new Error(`agent.json missing entrypoint.command at: ${path}`);
   }
   return m;
+}
+
+function readAgentManifest(path: string): AgentManifest {
+  const raw = readFileSync(path, 'utf-8');
+  const manifest = JSON.parse(raw) as AgentManifest;
+  if (manifest?.kind !== 'agent') {
+    throw new Error(`agent.json is not an agent manifest at: ${path}`);
+  }
+  return manifest;
+}
+
+function readLockfileV2(lockfilePath: string): LockfileV2 {
+  const raw = readFileSync(lockfilePath, 'utf-8');
+  const lock = JSON.parse(raw) as LockfileV2;
+  if (lock.lockfile_version !== 2) {
+    throw new Error(
+      `Unsupported lockfile version at ${lockfilePath}; expected agent.lock v2. Run "agentpm install" to regenerate the lockfile.`,
+    );
+  }
+  return lock;
+}
+
+function resolveAgentLockfilePath(lockfileOverride?: string): string {
+  if (lockfileOverride) return lockfileOverride;
+  return join(findProjectRoot(process.cwd()), 'agent.lock');
+}
+
+function emptyReservedReferences(): ReservedReferences {
+  return {
+    skills: [],
+    knowledge: [],
+    memory: [],
+    profiles: [],
+  };
+}
+
+function resolveToolInstalledPath(
+  name: string,
+  version: string,
+  toolDirOverride?: string,
+): { root: string; manifestPath: string } | null {
+  const projectRoot = findProjectRoot(process.cwd());
+  const candidates = [
+    toolDirOverride,
+    process.env.AGENTPM_TOOL_DIR,
+    resolve(projectRoot, '.agentpm/tools'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/tools') : undefined,
+  ].filter(Boolean) as string[];
+
+  for (const base of candidates) {
+    const hit = findInstalled(base, name, version);
+    if (hit) return hit;
+  }
+  return null;
 }
 
 function buildEnv(
@@ -770,4 +949,59 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
     return { func, meta };
   }
   return func;
+}
+
+export async function loadAgent(
+  spec: string,
+  options: LoadAgentOptions = {},
+): Promise<LoadedAgent> {
+  const { root, manifestPath } = resolveAgentRoot(spec, options.agentDirOverride);
+  const manifest = readAgentManifest(manifestPath);
+
+  const lockfilePath = resolveAgentLockfilePath(options.lockfileOverride);
+  if (!existsSync(lockfilePath)) {
+    throw new Error(
+      `agent.lock not found at ${lockfilePath}; installed agent metadata requires a lockfile v2. Run "agentpm install" to generate the lockfile.`,
+    );
+  }
+
+  const lock = readLockfileV2(lockfilePath);
+  const packageKey = `agent:${manifest.name}@${manifest.version}`;
+  const rootEntry = lock.roots?.[packageKey];
+  if (!rootEntry) {
+    throw new Error(
+      `Agent root "${packageKey}" not found in ${lockfilePath}; install the agent with agentpm install first.`,
+    );
+  }
+
+  const reserved: ReservedReferences = {
+    ...emptyReservedReferences(),
+    ...(rootEntry.reserved ?? {}),
+  };
+
+  const resolvedTools: ResolvedAgentToolRef[] = (rootEntry.tools ?? []).flatMap((toolKey) => {
+    const pkg = lock.packages?.[toolKey];
+    if (!pkg || pkg.kind !== 'tool') return [];
+
+    const installed = resolveToolInstalledPath(pkg.name, pkg.version, options.toolDirOverride);
+    return [
+      {
+        packageKey: toolKey,
+        kind: 'tool',
+        name: pkg.name,
+        version: pkg.version,
+        integrity: pkg.integrity,
+        root: installed?.root ?? null,
+        manifestPath: installed?.manifestPath ?? null,
+      },
+    ];
+  });
+
+  return {
+    root,
+    manifestPath,
+    manifest,
+    resolvedTools,
+    reserved,
+  };
 }
