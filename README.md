@@ -1,8 +1,9 @@
 # AgentPM™ Node SDK
 
-A lean, framework-agnostic **Node.js SDK** for running **AgentPM** tools from your app or agent runtime.
+A lean, framework-agnostic **Node.js SDK** for running **AgentPM** tools and inspecting installed agent packages from your app or agent runtime.
 
 - 🔎 **Discovers** tools installed by `agentpm install` in `.agentpm/tools` (project) and `~/.agentpm/tools` (user), with `AGENTPM_TOOL_DIR` override.
+- 📦 **Loads installed agents** from `.agentpm/agents` and exposes their resolved tool refs from `agent.lock`.
 - 🚀 **Executes entrypoints** in a subprocess (`node`/`python`) and exchanges JSON over stdin/stdout.
 - 🧩 **Metadata-aware**: `withMeta` returns `func + meta` (name, version, description, inputs, outputs).
 - 🧪 **Adapters**: tiny helpers (e.g. LangChain) without forcing extra deps.
@@ -75,6 +76,25 @@ console.log((await summarize({ text: 'hello' })).summary);
 const lcTool = await toLangChainTool(loaded);
 ```
 
+### Load an installed agent package
+
+```ts
+import { load, loadAgent } from '@agentpm/sdk';
+
+const agent = await loadAgent('@zack/support-agent@0.1.0');
+const firstTool = agent.resolvedTools[0];
+const tool = await load(`${firstTool.name}@${firstTool.version}`);
+```
+
+`loadAgent()` returns:
+
+- the installed agent manifest
+- the installed agent root path
+- reserved refs (`skills`, `knowledge`, `memory`, `profiles`) as metadata
+- `resolvedTools` from `agent.lock` v2
+
+It does **not** execute the agent package or orchestrate the tools for you.
+
 ### CJS require
 
 ```js
@@ -100,6 +120,33 @@ Each tool lives in a directory like:
       0.1.0/
         agent.json
         (tool files…)
+```
+
+Installed registry agent packages live separately:
+
+```
+.agentpm/
+  agents/
+    @zack/support-agent/
+      0.1.0/
+        agent.json
+        README.md
+```
+
+## Where installed agents are discovered
+
+Resolution order for `loadAgent()`:
+
+1. `AGENTPM_AGENT_DIR` (environment variable)
+2. `./.agentpm/agents` (project-local)
+3. `~/.agentpm/agents` (user-local)
+
+You can also override per call:
+
+```ts
+await loadAgent('@zack/support-agent@0.1.0', {
+  agentDirOverride: '/path/to/agents',
+});
 ```
 
 ---
