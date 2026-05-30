@@ -31,16 +31,17 @@ function makeInstalledTool(baseDir: string, spec: string) {
 
 function makeInstalledAgent(baseDir: string, spec: string) {
   const atIdx = spec.lastIndexOf('@');
-  const name = spec.slice(0, atIdx);
+  const packageName = spec.slice(0, atIdx);
   const version = spec.slice(atIdx + 1);
-  const root = join(baseDir, `${name}/${version}`);
+  const root = join(baseDir, `${packageName}/${version}`);
+  const manifestName = packageName.slice(packageName.indexOf('/') + 1);
   mkdirSync(root, { recursive: true });
   writeFileSync(
     join(root, 'agent.json'),
     JSON.stringify(
       {
         kind: 'agent',
-        name,
+        name: manifestName,
         version,
         description: 'Installed agent fixture',
         tools: ['@zack/capitalize@0.1.0'],
@@ -135,7 +136,7 @@ describe('agentpm node sdk - loadAgent', () => {
     });
 
     expect(loaded.manifest.kind).toBe('agent');
-    expect(loaded.manifest.name).toBe('@zack/support-agent');
+    expect(loaded.manifest.name).toBe('support-agent');
     expect(loaded.root).toContain('.agentpm/agents');
     expect(loaded.reserved.skills).toEqual(['@zack/triage-skill@0.1.0']);
     expect(loaded.resolvedTools).toEqual([

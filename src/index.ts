@@ -477,7 +477,7 @@ function resolveAgentRoot(spec: string, agentDirOverride?: string) {
   if (semver.valid(rangeOrVersion)) {
     for (const base of candidates) {
       const hit = findInstalled(base, name, rangeOrVersion);
-      if (hit) return hit;
+      if (hit) return { ...hit, packageName: name };
     }
     throw new Error(`Agent "${spec}" not found in .agentpm/agents (or overrides).`);
   }
@@ -501,7 +501,7 @@ function resolveAgentRoot(spec: string, agentDirOverride?: string) {
     if (!picked) continue;
 
     const hit = findInstalled(base, name, picked);
-    if (hit) return hit;
+    if (hit) return { ...hit, packageName: name };
   }
 
   const searched = candidates.join(', ');
@@ -955,7 +955,7 @@ export async function loadAgent(
   spec: string,
   options: LoadAgentOptions = {},
 ): Promise<LoadedAgent> {
-  const { root, manifestPath } = resolveAgentRoot(spec, options.agentDirOverride);
+  const { root, manifestPath, packageName } = resolveAgentRoot(spec, options.agentDirOverride);
   const manifest = readAgentManifest(manifestPath);
 
   const lockfilePath = resolveAgentLockfilePath(options.lockfileOverride);
@@ -966,7 +966,7 @@ export async function loadAgent(
   }
 
   const lock = readLockfileV2(lockfilePath);
-  const packageKey = `agent:${manifest.name}@${manifest.version}`;
+  const packageKey = `agent:${packageName}@${manifest.version}`;
   const rootEntry = lock.roots?.[packageKey];
   if (!rootEntry) {
     throw new Error(
