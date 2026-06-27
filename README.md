@@ -3,7 +3,8 @@
 A lean, framework-agnostic **Node.js SDK** for running **AgentPM** tools and inspecting installed agent packages from your app or agent runtime.
 
 - 🔎 **Discovers** tools installed by `agentpm install` in `.agentpm/tools` (project) and `~/.agentpm/tools` (user), with `AGENTPM_TOOL_DIR` override.
-- 📦 **Loads installed agents** from `.agentpm/agents` and exposes their resolved tool refs from `agent.lock`.
+- 📦 **Loads installed agents** from `.agentpm/agents` and exposes their resolved tool and skill refs from `agent.lock`.
+- 📚 **Loads installed skills** from `.agentpm/skills` and exposes their manual content plus resolved tool refs.
 - 🚀 **Executes entrypoints** in a subprocess (`node`/`python`) and exchanges JSON over stdin/stdout.
 - 🧩 **Metadata-aware**: `withMeta` returns `func + meta` (name, version, description, inputs, outputs).
 - 🧪 **Adapters**: tiny helpers (e.g. LangChain) without forcing extra deps.
@@ -92,7 +93,7 @@ const tool = await load(`${firstTool.name}@${firstTool.version}`);
 
 - the installed agent manifest
 - the installed agent root path
-- reserved refs (`skills`, `knowledge`, `memory`, `profiles`) as metadata
+- reserved refs (`knowledge`, `memory`, `profiles`) as metadata
 - `resolvedTools` from `agent.lock`
 - `resolvedSkills` from `agent.lock`
 
