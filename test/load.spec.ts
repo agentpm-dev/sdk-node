@@ -106,19 +106,47 @@ function makeFailingToolPackage(baseDir: string, spec: string) {
 
 describe('agentpm node sdk - load + toLangChainTool', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-test-'));
+  const skillsDir = join(tmp, 'skills');
   const okSpec = '@zack/summarize@0.1.0';
   const bashCommandSpec = '@zack/scrape@0.1.0';
   const failSpec = '@zack/fail@0.1.0';
   const withEnvSpec = '@zack/with-env@0.1.0';
+  const skillSpec = '@zack/triage-playbook@0.1.0';
 
   beforeAll(() => {
     makeToolPackage(tmp, okSpec);
     makeToolPackage(tmp, bashCommandSpec, 'bash');
     makeFailingToolPackage(tmp, failSpec);
     makeToolPackage(tmp, withEnvSpec, undefined, undefined, true);
+    const atIdx = skillSpec.lastIndexOf('@');
+    const name = skillSpec.slice(0, atIdx);
+    const version = skillSpec.slice(atIdx + 1);
+    const root = join(skillsDir, `${name}/${version}`);
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, 'agent.json'),
+      JSON.stringify(
+        {
+          kind: 'skill',
+          name,
+          version,
+          description: 'Skill fixture',
+          tools: [],
+          skill: {
+            entrypoint: 'SKILL.md',
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    writeFileSync(join(root, 'SKILL.md'), '# Playbook\n', 'utf8');
+    process.env.AGENTPM_SKILL_DIR = skillsDir;
   });
 
   afterAll(() => {
+    delete process.env.AGENTPM_SKILL_DIR;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -199,5 +227,15 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
         toolDirOverride: tmp,
       }),
     ).rejects.toThrow(/Missing environment variable: OPENAI_API_KEY/i);
+  });
+
+  it('rejects installed skill specs with guidance to use loadSkill', async () => {
+    await expect(load(skillSpec, { toolDirOverride: tmp })).rejects.toThrow(/use loadSkill/i);
+  });
+
+  it('rejects uninstalled skill-like specs with guidance to use loadSkill', async () => {
+    await expect(load('@zack/missing-skill@0.1.0', { toolDirOverride: tmp })).rejects.toThrow(
+      /use loadSkill/i,
+    );
   });
 });

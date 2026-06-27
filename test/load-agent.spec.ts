@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -29,7 +29,35 @@ function makeInstalledTool(baseDir: string, spec: string) {
   );
 }
 
-function makeInstalledAgent(baseDir: string, spec: string) {
+function makeInstalledSkill(baseDir: string, spec: string) {
+  const atIdx = spec.lastIndexOf('@');
+  const packageName = spec.slice(0, atIdx);
+  const version = spec.slice(atIdx + 1);
+  const root = join(baseDir, `${packageName}/${version}`);
+  const manifestName = packageName.slice(packageName.indexOf('/') + 1);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, 'SKILL.md'), '# Triage playbook\n\nUse the checklist.\n', 'utf8');
+  writeFileSync(
+    join(root, 'agent.json'),
+    JSON.stringify(
+      {
+        kind: 'skill',
+        name: manifestName,
+        version,
+        description: 'Installed skill fixture',
+        tools: ['@zack/capitalize@0.1.0'],
+        skill: {
+          entrypoint: 'SKILL.md',
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
+function makeInstalledAgent(baseDir: string, spec: string, skillRef: string) {
   const atIdx = spec.lastIndexOf('@');
   const packageName = spec.slice(0, atIdx);
   const version = spec.slice(atIdx + 1);
@@ -46,7 +74,7 @@ function makeInstalledAgent(baseDir: string, spec: string) {
         description: 'Installed agent fixture',
         tools: ['@zack/capitalize@0.1.0'],
         examples: [{ title: 'Example', prompt: 'Help the user.' }],
-        skills: ['@zack/triage-skill@0.1.0'],
+        skills: [skillRef],
         knowledge: [],
         memory: [],
         profiles: [],
@@ -62,19 +90,22 @@ describe('agentpm node sdk - loadAgent', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-agent-test-'));
   const toolsDir = join(tmp, '.agentpm', 'tools');
   const agentsDir = join(tmp, '.agentpm', 'agents');
+  const skillsDir = join(tmp, '.agentpm', 'skills');
   const lockfilePath = join(tmp, 'agent.lock');
   const agentSpec = '@zack/support-agent@0.1.0';
   const newerAgentSpec = '@zack/support-agent@0.2.0';
 
   beforeAll(() => {
     makeInstalledTool(toolsDir, '@zack/capitalize@0.1.0');
-    makeInstalledAgent(agentsDir, agentSpec);
-    makeInstalledAgent(agentsDir, newerAgentSpec);
+    makeInstalledSkill(skillsDir, '@zack/triage-skill@0.1.0');
+    makeInstalledSkill(skillsDir, '@zack/triage-skill@0.2.0');
+    makeInstalledAgent(agentsDir, agentSpec, '@zack/triage-skill@0.1.0');
+    makeInstalledAgent(agentsDir, newerAgentSpec, '@zack/triage-skill@0.2.0');
     writeFileSync(
       lockfilePath,
       JSON.stringify(
         {
-          lockfile_version: 2,
+          lockfile_version: 3,
           generated: '2026-05-23T00:00:00Z',
           packages: {
             'agent:@zack/support-agent@0.1.0': {
@@ -95,12 +126,24 @@ describe('agentpm node sdk - loadAgent', () => {
               version: '0.1.0',
               integrity: 'sha256-tool',
             },
+            'skill:@zack/triage-skill@0.1.0': {
+              kind: 'skill',
+              name: '@zack/triage-skill',
+              version: '0.1.0',
+              integrity: 'sha256-skill',
+            },
+            'skill:@zack/triage-skill@0.2.0': {
+              kind: 'skill',
+              name: '@zack/triage-skill',
+              version: '0.2.0',
+              integrity: 'sha256-skill-2',
+            },
           },
           roots: {
             'agent:@zack/support-agent@0.1.0': {
               tools: ['tool:@zack/capitalize@0.1.0'],
+              skills: ['skill:@zack/triage-skill@0.1.0'],
               reserved: {
-                skills: ['@zack/triage-skill@0.1.0'],
                 knowledge: [],
                 memory: [],
                 profiles: [],
@@ -108,8 +151,8 @@ describe('agentpm node sdk - loadAgent', () => {
             },
             'agent:@zack/support-agent@0.2.0': {
               tools: ['tool:@zack/capitalize@0.1.0'],
+              skills: ['skill:@zack/triage-skill@0.2.0'],
               reserved: {
-                skills: ['@zack/triage-skill@0.2.0'],
                 knowledge: [],
                 memory: [],
                 profiles: [],
@@ -128,9 +171,10 @@ describe('agentpm node sdk - loadAgent', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('loads an installed agent manifest and exposes resolved tool refs from lockfile v2', async () => {
+  it('loads an installed agent manifest and exposes resolved tools and skills from the lockfile', async () => {
     const loaded = await loadAgent(agentSpec, {
       agentDirOverride: agentsDir,
+      skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       lockfileOverride: lockfilePath,
     });
@@ -138,7 +182,7 @@ describe('agentpm node sdk - loadAgent', () => {
     expect(loaded.manifest.kind).toBe('agent');
     expect(loaded.manifest.name).toBe('support-agent');
     expect(loaded.root).toContain('.agentpm/agents');
-    expect(loaded.reserved.skills).toEqual(['@zack/triage-skill@0.1.0']);
+    expect(loaded.reserved.skills).toEqual([]);
     expect(loaded.resolvedTools).toEqual([
       {
         packageKey: 'tool:@zack/capitalize@0.1.0',
@@ -150,34 +194,48 @@ describe('agentpm node sdk - loadAgent', () => {
         manifestPath: expect.stringContaining('.agentpm/tools'),
       },
     ]);
+    expect(loaded.resolvedSkills).toEqual([
+      {
+        packageKey: 'skill:@zack/triage-skill@0.1.0',
+        kind: 'skill',
+        name: '@zack/triage-skill',
+        version: '0.1.0',
+        integrity: 'sha256-skill',
+        root: expect.stringContaining('.agentpm/skills'),
+        manifestPath: expect.stringContaining('.agentpm/skills'),
+      },
+    ]);
   });
 
   it('resolves latest agent versions from the installed agents layout', async () => {
     const loaded = await loadAgent('@zack/support-agent@latest', {
       agentDirOverride: agentsDir,
+      skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       lockfileOverride: lockfilePath,
     });
 
     expect(loaded.manifest.version).toBe('0.2.0');
-    expect(loaded.reserved.skills).toEqual(['@zack/triage-skill@0.2.0']);
+    expect(loaded.resolvedSkills[0]?.version).toBe('0.2.0');
   });
 
   it('resolves semver ranges for installed agents', async () => {
     const loaded = await loadAgent('@zack/support-agent@>=0.1.0 <0.3.0', {
       agentDirOverride: agentsDir,
+      skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       lockfileOverride: lockfilePath,
     });
 
     expect(loaded.manifest.version).toBe('0.2.0');
-    expect(loaded.reserved.skills).toEqual(['@zack/triage-skill@0.2.0']);
+    expect(loaded.resolvedSkills[0]?.version).toBe('0.2.0');
   });
 
   it('fails with an actionable error when agent.lock is missing', async () => {
     await expect(
       loadAgent(agentSpec, {
         agentDirOverride: agentsDir,
+        skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
         lockfileOverride: join(tmp, 'missing-agent.lock'),
       }),
@@ -203,6 +261,7 @@ describe('agentpm node sdk - loadAgent', () => {
     await expect(
       loadAgent(agentSpec, {
         agentDirOverride: agentsDir,
+        skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
         lockfileOverride: v1LockfilePath,
       }),
@@ -215,7 +274,7 @@ describe('agentpm node sdk - loadAgent', () => {
       wrongRootLockfilePath,
       JSON.stringify(
         {
-          lockfile_version: 2,
+          lockfile_version: 3,
           generated: '2026-05-23T00:00:00Z',
           packages: {
             'agent:@zack/support-agent@0.1.0': {
@@ -236,6 +295,7 @@ describe('agentpm node sdk - loadAgent', () => {
     await expect(
       loadAgent(agentSpec, {
         agentDirOverride: agentsDir,
+        skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
         lockfileOverride: wrongRootLockfilePath,
       }),
@@ -248,7 +308,7 @@ describe('agentpm node sdk - loadAgent', () => {
       missingToolLockfilePath,
       JSON.stringify(
         {
-          lockfile_version: 2,
+          lockfile_version: 3,
           generated: '2026-05-23T00:00:00Z',
           packages: {
             'agent:@zack/support-agent@0.1.0': {
@@ -267,8 +327,8 @@ describe('agentpm node sdk - loadAgent', () => {
           roots: {
             'agent:@zack/support-agent@0.1.0': {
               tools: ['tool:@zack/missing-tool@0.9.0'],
+              skills: [],
               reserved: {
-                skills: [],
                 knowledge: [],
                 memory: [],
                 profiles: [],
@@ -284,6 +344,7 @@ describe('agentpm node sdk - loadAgent', () => {
 
     const loaded = await loadAgent(agentSpec, {
       agentDirOverride: agentsDir,
+      skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       lockfileOverride: missingToolLockfilePath,
     });

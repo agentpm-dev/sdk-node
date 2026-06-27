@@ -79,10 +79,12 @@ const lcTool = await toLangChainTool(loaded);
 ### Load an installed agent package
 
 ```ts
-import { load, loadAgent } from '@agentpm/sdk';
+import { load, loadAgent, loadSkill } from '@agentpm/sdk';
 
 const agent = await loadAgent('@zack/support-agent@0.1.0');
-const firstTool = agent.resolvedTools[0];
+const firstSkill = agent.resolvedSkills[0];
+const skill = await loadSkill(`${firstSkill.name}@${firstSkill.version}`);
+const firstTool = skill.resolvedTools[0];
 const tool = await load(`${firstTool.name}@${firstTool.version}`);
 ```
 
@@ -91,9 +93,35 @@ const tool = await load(`${firstTool.name}@${firstTool.version}`);
 - the installed agent manifest
 - the installed agent root path
 - reserved refs (`skills`, `knowledge`, `memory`, `profiles`) as metadata
-- `resolvedTools` from `agent.lock` v2
+- `resolvedTools` from `agent.lock`
+- `resolvedSkills` from `agent.lock`
 
 It does **not** execute the agent package or orchestrate the tools for you.
+
+### Load an installed skill package
+
+```ts
+import { loadSkill } from '@agentpm/sdk';
+
+const skill = await loadSkill('@zack/triage-playbook@0.1.0');
+
+console.log(skill.entrypointPath);
+console.log(skill.entrypointContent);
+console.log(skill.references);
+console.log(skill.scripts);
+console.log(skill.resolvedTools);
+```
+
+`loadSkill()` returns an inspectable Skill object. Skills are **not** runnable SDK objects.
+
+### `load()` stays tool-only
+
+```ts
+import { load } from '@agentpm/sdk';
+
+await load('@zack/triage-playbook@0.1.0');
+// throws: use loadSkill("@zack/triage-playbook@0.1.0") instead
+```
 
 ### CJS require
 
@@ -133,6 +161,17 @@ Installed registry agent packages live separately:
         README.md
 ```
 
+Installed registry skill packages live separately:
+
+```
+.agentpm/
+  skills/
+    @zack/triage-playbook/
+      0.1.0/
+        agent.json
+        SKILL.md
+```
+
 ## Where installed agents are discovered
 
 Resolution order for `loadAgent()`:
@@ -146,6 +185,22 @@ You can also override per call:
 ```ts
 await loadAgent('@zack/support-agent@0.1.0', {
   agentDirOverride: '/path/to/agents',
+});
+```
+
+## Where installed skills are discovered
+
+Resolution order for `loadSkill()`:
+
+1. `AGENTPM_SKILL_DIR` (environment variable)
+2. `./.agentpm/skills` (project-local)
+3. `~/.agentpm/skills` (user-local)
+
+You can also override per call:
+
+```ts
+await loadSkill('@zack/triage-playbook@0.1.0', {
+  skillDirOverride: '/path/to/skills',
 });
 ```
 
