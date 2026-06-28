@@ -51,6 +51,29 @@ export type AgentMeta = {
   profiles?: DependencyReference[];
 };
 
+export type SkillCompatibility = {
+  model_families?: string[];
+  runtimes?: string[];
+  environments?: string[];
+  export_targets?: string[];
+};
+
+export type SkillMetadata = {
+  entrypoint: string;
+  references?: string[];
+  scripts?: string[];
+  compatibility?: SkillCompatibility;
+};
+
+export type SkillMeta = {
+  kind: 'skill';
+  name: string;
+  version: string;
+  description?: string;
+  tools?: DependencyReference[];
+  skill: SkillMetadata;
+};
+
 type Runtime = {
   type: string;
   version: string;
@@ -77,6 +100,7 @@ type Manifest = ToolMeta & {
 };
 
 type AgentManifest = AgentMeta;
+type SkillManifest = SkillMeta;
 
 export type LoadOptions = {
   withMeta?: boolean;
@@ -88,6 +112,13 @@ export type LoadOptions = {
 
 export type LoadAgentOptions = {
   agentDirOverride?: string;
+  skillDirOverride?: string;
+  toolDirOverride?: string;
+  lockfileOverride?: string;
+};
+
+export type LoadSkillOptions = {
+  skillDirOverride?: string;
   toolDirOverride?: string;
   lockfileOverride?: string;
 };
@@ -106,8 +137,17 @@ export type ResolvedAgentToolRef = {
   manifestPath: string | null;
 };
 
+export type ResolvedAgentSkillRef = {
+  packageKey: string;
+  kind: 'skill';
+  name: string;
+  version: string;
+  integrity: string;
+  root: string | null;
+  manifestPath: string | null;
+};
+
 export type ReservedReferences = {
-  skills: DependencyReference[];
   knowledge: DependencyReference[];
   memory: DependencyReference[];
   profiles: DependencyReference[];
@@ -118,7 +158,24 @@ export type LoadedAgent = {
   manifestPath: string;
   manifest: AgentManifest;
   resolvedTools: ResolvedAgentToolRef[];
+  resolvedSkills: ResolvedAgentSkillRef[];
   reserved: ReservedReferences;
+};
+
+export type LoadedSkill = {
+  kind: 'skill';
+  name: string;
+  version: string;
+  description?: string;
+  root: string;
+  manifestPath: string;
+  manifest: SkillManifest;
+  skill: SkillMetadata;
+  entrypointPath: string;
+  entrypointContent: string;
+  references: string[];
+  scripts: string[];
+  resolvedTools: ResolvedAgentToolRef[];
 };
 
 type LockedPackage = {
@@ -132,6 +189,7 @@ type LockedRoot = {
   name?: string;
   version?: string;
   tools?: string[];
+  skills?: string[];
   reserved?: Partial<ReservedReferences>;
 };
 
@@ -510,6 +568,58 @@ function resolveAgentRoot(spec: string, agentDirOverride?: string) {
   );
 }
 
+function resolveSkillRoot(spec: string, skillDirOverride?: string) {
+  const atIdx = spec.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === spec.length - 1) {
+    throw new Error(`Invalid skill spec "${spec}". Expected "@scope/name@version".`);
+  }
+  const rangeOrVersion = spec.slice(atIdx + 1).trim();
+  const name = spec.slice(0, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
+
+  const candidates = [
+    skillDirOverride,
+    process.env.AGENTPM_SKILL_DIR,
+    resolve(projectRoot, '.agentpm/skills'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/skills') : undefined,
+  ].filter(Boolean) as string[];
+
+  if (semver.valid(rangeOrVersion)) {
+    for (const base of candidates) {
+      const hit = findInstalled(base, name, rangeOrVersion);
+      if (hit) return { ...hit, packageName: name };
+    }
+    throw new Error(`Skill "${spec}" not found in .agentpm/skills (or overrides).`);
+  }
+
+  const isLatest = rangeOrVersion.toLowerCase() === 'latest';
+  const isRange = semver.validRange(rangeOrVersion) !== null;
+  if (!isLatest && !isRange) {
+    throw new Error(
+      `Invalid version/range "${rangeOrVersion}". Use exact (e.g. 0.1.2), a semver range (e.g. ^0.1), or "latest".`,
+    );
+  }
+
+  for (const base of candidates) {
+    const installed = listInstalledVersions(base, name);
+    if (installed.length === 0) continue;
+
+    const picked = isLatest
+      ? semver.rsort(installed)[0]!
+      : semver.maxSatisfying(installed, rangeOrVersion, { includePrerelease: false });
+
+    if (!picked) continue;
+
+    const hit = findInstalled(base, name, picked);
+    if (hit) return { ...hit, packageName: name };
+  }
+
+  const searched = candidates.join(', ');
+  throw new Error(
+    `No installed version of "${name}" matches "${rangeOrVersion}". Searched: ${searched}`,
+  );
+}
+
 function readManifest(path: string): Manifest {
   const raw = readFileSync(path, 'utf-8');
   const m = JSON.parse(raw);
@@ -528,12 +638,27 @@ function readAgentManifest(path: string): AgentManifest {
   return manifest;
 }
 
+function readSkillManifest(path: string): SkillManifest {
+  const raw = readFileSync(path, 'utf-8');
+  const manifest = JSON.parse(raw) as SkillManifest;
+  if (manifest?.kind !== 'skill') {
+    throw new Error(`agent.json is not a skill manifest at: ${path}`);
+  }
+  if (!manifest.skill?.entrypoint) {
+    throw new Error(`agent.json missing skill.entrypoint at: ${path}`);
+  }
+  return manifest;
+}
+
+// Historical name: this helper now accepts modern agent.lock shapes v2 and v3.
+// Keep the narrower name for now to avoid internal churn while Skills remain the
+// only v3-specific addition on top of the same overall lock envelope.
 function readLockfileV2(lockfilePath: string): LockfileV2 {
   const raw = readFileSync(lockfilePath, 'utf-8');
   const lock = JSON.parse(raw) as LockfileV2;
-  if (lock.lockfile_version !== 2) {
+  if (lock.lockfile_version !== 2 && lock.lockfile_version !== 3) {
     throw new Error(
-      `Unsupported lockfile version at ${lockfilePath}; expected agent.lock v2. Run "agentpm install" to regenerate the lockfile.`,
+      `Unsupported lockfile version at ${lockfilePath}; expected agent.lock v2 or v3. Run "agentpm install" to regenerate the lockfile.`,
     );
   }
   return lock;
@@ -542,15 +667,6 @@ function readLockfileV2(lockfilePath: string): LockfileV2 {
 function resolveAgentLockfilePath(lockfileOverride?: string): string {
   if (lockfileOverride) return lockfileOverride;
   return join(findProjectRoot(process.cwd()), 'agent.lock');
-}
-
-function emptyReservedReferences(): ReservedReferences {
-  return {
-    skills: [],
-    knowledge: [],
-    memory: [],
-    profiles: [],
-  };
 }
 
 function resolveToolInstalledPath(
@@ -564,6 +680,26 @@ function resolveToolInstalledPath(
     process.env.AGENTPM_TOOL_DIR,
     resolve(projectRoot, '.agentpm/tools'),
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/tools') : undefined,
+  ].filter(Boolean) as string[];
+
+  for (const base of candidates) {
+    const hit = findInstalled(base, name, version);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function resolveSkillInstalledPath(
+  name: string,
+  version: string,
+  skillDirOverride?: string,
+): { root: string; manifestPath: string } | null {
+  const projectRoot = findProjectRoot(process.cwd());
+  const candidates = [
+    skillDirOverride,
+    process.env.AGENTPM_SKILL_DIR,
+    resolve(projectRoot, '.agentpm/skills'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/skills') : undefined,
   ].filter(Boolean) as string[];
 
   for (const base of candidates) {
@@ -883,7 +1019,28 @@ export async function load(
 export async function load(spec: string, options: LoadOptions = {}): Promise<Loaded> {
   dprint(`spec=${spec}`);
 
-  const { root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride);
+  let root: string;
+  let manifestPath: string;
+  try {
+    ({ root, manifestPath } = resolveToolRoot(spec, options.toolDirOverride));
+  } catch (err) {
+    try {
+      resolveSkillRoot(spec);
+      throw new Error(
+        `Package "${spec}" is a Skill. load() is tool-only; use loadSkill("${spec}") instead.`,
+      );
+    } catch (skillErr) {
+      if (skillErr instanceof Error && skillErr.message.includes('loadSkill(')) {
+        throw skillErr;
+      }
+      if (err instanceof Error && err.message.includes('not found in .agentpm/tools')) {
+        throw new Error(
+          `${err.message} If this package is a Skill, use loadSkill("${spec}") instead.`,
+        );
+      }
+      throw err;
+    }
+  }
   const manifest = readManifest(manifestPath);
 
   const ep = manifest.entrypoint;
@@ -974,9 +1131,11 @@ export async function loadAgent(
     );
   }
 
+  const rootReserved = rootEntry.reserved ?? {};
   const reserved: ReservedReferences = {
-    ...emptyReservedReferences(),
-    ...(rootEntry.reserved ?? {}),
+    knowledge: rootReserved.knowledge ?? [],
+    memory: rootReserved.memory ?? [],
+    profiles: rootReserved.profiles ?? [],
   };
 
   const resolvedTools: ResolvedAgentToolRef[] = (rootEntry.tools ?? []).flatMap((toolKey) => {
@@ -997,11 +1156,91 @@ export async function loadAgent(
     ];
   });
 
+  const resolvedSkills: ResolvedAgentSkillRef[] = (rootEntry.skills ?? []).flatMap((skillKey) => {
+    const pkg = lock.packages?.[skillKey];
+    if (!pkg || pkg.kind !== 'skill') return [];
+
+    const installed = resolveSkillInstalledPath(pkg.name, pkg.version, options.skillDirOverride);
+    return [
+      {
+        packageKey: skillKey,
+        kind: 'skill',
+        name: pkg.name,
+        version: pkg.version,
+        integrity: pkg.integrity,
+        root: installed?.root ?? null,
+        manifestPath: installed?.manifestPath ?? null,
+      },
+    ];
+  });
+
   return {
     root,
     manifestPath,
     manifest,
     resolvedTools,
+    resolvedSkills,
     reserved,
+  };
+}
+
+export async function loadSkill(
+  spec: string,
+  options: LoadSkillOptions = {},
+): Promise<LoadedSkill> {
+  const { root, manifestPath, packageName } = resolveSkillRoot(spec, options.skillDirOverride);
+  const manifest = readSkillManifest(manifestPath);
+
+  const lockfilePath = resolveAgentLockfilePath(options.lockfileOverride);
+  if (!existsSync(lockfilePath)) {
+    throw new Error(
+      `agent.lock not found at ${lockfilePath}; installed skill metadata requires a lockfile v3. Run "agentpm install" to generate the lockfile.`,
+    );
+  }
+
+  const lock = readLockfileV2(lockfilePath);
+  const packageKey = `skill:${packageName}@${manifest.version}`;
+  const rootEntry = lock.roots?.[packageKey];
+  if (!rootEntry) {
+    throw new Error(
+      `Skill root "${packageKey}" not found in ${lockfilePath}; install the skill with agentpm install first.`,
+    );
+  }
+
+  const resolvedTools: ResolvedAgentToolRef[] = (rootEntry.tools ?? []).flatMap((toolKey) => {
+    const pkg = lock.packages?.[toolKey];
+    if (!pkg || pkg.kind !== 'tool') return [];
+
+    const installed = resolveToolInstalledPath(pkg.name, pkg.version, options.toolDirOverride);
+    return [
+      {
+        packageKey: toolKey,
+        kind: 'tool',
+        name: pkg.name,
+        version: pkg.version,
+        integrity: pkg.integrity,
+        root: installed?.root ?? null,
+        manifestPath: installed?.manifestPath ?? null,
+      },
+    ];
+  });
+
+  const entrypointPath = resolve(root, manifest.skill.entrypoint);
+  const entrypointContent = readFileSync(entrypointPath, 'utf-8');
+
+  return {
+    kind: 'skill',
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    root,
+    manifestPath,
+    manifest,
+    skill: manifest.skill,
+    entrypointPath,
+    entrypointContent,
+    references: manifest.skill.references ?? [],
+    scripts: manifest.skill.scripts ?? [],
+    resolvedTools,
   };
 }
