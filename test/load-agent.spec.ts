@@ -182,7 +182,6 @@ describe('agentpm node sdk - loadAgent', () => {
     expect(loaded.manifest.kind).toBe('agent');
     expect(loaded.manifest.name).toBe('support-agent');
     expect(loaded.root).toContain('.agentpm/agents');
-    expect(loaded.reserved.skills).toEqual([]);
     expect(loaded.resolvedTools).toEqual([
       {
         packageKey: 'tool:@zack/capitalize@0.1.0',
@@ -205,6 +204,62 @@ describe('agentpm node sdk - loadAgent', () => {
         manifestPath: expect.stringContaining('.agentpm/skills'),
       },
     ]);
+  });
+
+  it('ignores legacy reserved.skills entries from older lockfile shapes', async () => {
+    const legacyLockfilePath = join(tmp, 'agent-legacy.lock');
+    writeFileSync(
+      legacyLockfilePath,
+      JSON.stringify(
+        {
+          lockfile_version: 2,
+          generated: '2026-05-23T00:00:00Z',
+          packages: {
+            'agent:@zack/support-agent@0.1.0': {
+              kind: 'agent',
+              name: '@zack/support-agent',
+              version: '0.1.0',
+              integrity: 'sha256-agent',
+            },
+            'tool:@zack/capitalize@0.1.0': {
+              kind: 'tool',
+              name: '@zack/capitalize',
+              version: '0.1.0',
+              integrity: 'sha256-tool',
+            },
+          },
+          roots: {
+            'agent:@zack/support-agent@0.1.0': {
+              tools: ['tool:@zack/capitalize@0.1.0'],
+              reserved: {
+                skills: ['skill:@zack/legacy-skill@0.1.0'],
+                knowledge: [],
+                memory: [],
+                profiles: [],
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const loaded = await loadAgent(agentSpec, {
+      agentDirOverride: agentsDir,
+      skillDirOverride: skillsDir,
+      toolDirOverride: toolsDir,
+      lockfileOverride: legacyLockfilePath,
+    });
+
+    expect(loaded.reserved).toEqual({
+      knowledge: [],
+      memory: [],
+      profiles: [],
+    });
+    expect('skills' in loaded.reserved).toBe(false);
+    expect(loaded.resolvedSkills).toEqual([]);
   });
 
   it('resolves latest agent versions from the installed agents layout', async () => {

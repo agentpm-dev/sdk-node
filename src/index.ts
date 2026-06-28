@@ -148,7 +148,6 @@ export type ResolvedAgentSkillRef = {
 };
 
 export type ReservedReferences = {
-  skills: DependencyReference[];
   knowledge: DependencyReference[];
   memory: DependencyReference[];
   profiles: DependencyReference[];
@@ -670,15 +669,6 @@ function resolveAgentLockfilePath(lockfileOverride?: string): string {
   return join(findProjectRoot(process.cwd()), 'agent.lock');
 }
 
-function emptyReservedReferences(): ReservedReferences {
-  return {
-    skills: [],
-    knowledge: [],
-    memory: [],
-    profiles: [],
-  };
-}
-
 function resolveToolInstalledPath(
   name: string,
   version: string,
@@ -1141,9 +1131,11 @@ export async function loadAgent(
     );
   }
 
+  const rootReserved = rootEntry.reserved ?? {};
   const reserved: ReservedReferences = {
-    ...emptyReservedReferences(),
-    ...(rootEntry.reserved ?? {}),
+    knowledge: rootReserved.knowledge ?? [],
+    memory: rootReserved.memory ?? [],
+    profiles: rootReserved.profiles ?? [],
   };
 
   const resolvedTools: ResolvedAgentToolRef[] = (rootEntry.tools ?? []).flatMap((toolKey) => {
