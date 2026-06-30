@@ -164,4 +164,68 @@ describe('agentpm node sdk - loadSkill', () => {
       },
     ]);
   });
+
+  it('falls back to manifest tools when the skill has no dedicated lock root', async () => {
+    const rootlessLockfilePath = join(tmp, 'agent-owned-skill.lock');
+    makeInstalledSkill(skillsDir, '@zack/triage-from-agent@0.1.0', true);
+    writeFileSync(
+      rootlessLockfilePath,
+      JSON.stringify(
+        {
+          lockfile_version: 3,
+          generated: '2026-06-29T00:00:00Z',
+          packages: {
+            'agent:@zack/ops-console@0.1.1': {
+              kind: 'agent',
+              name: '@zack/ops-console',
+              version: '0.1.1',
+              integrity: 'sha256-agent',
+            },
+            'skill:@zack/triage-from-agent@0.1.0': {
+              kind: 'skill',
+              name: '@zack/triage-from-agent',
+              version: '0.1.0',
+              integrity: 'sha256-skill',
+            },
+            'tool:@zack/capitalize@0.1.0': {
+              kind: 'tool',
+              name: '@zack/capitalize',
+              version: '0.1.0',
+              integrity: 'sha256-tool',
+            },
+          },
+          roots: {
+            'agent:@zack/ops-console@0.1.1': {
+              skills: ['skill:@zack/triage-from-agent@0.1.0'],
+              tools: [],
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const loaded = await loadSkill('@zack/triage-from-agent@0.1.0', {
+      skillDirOverride: skillsDir,
+      toolDirOverride: toolsDir,
+      lockfileOverride: rootlessLockfilePath,
+    });
+
+    expect(loaded.kind).toBe('skill');
+    expect(loaded.name).toBe('triage-from-agent');
+    expect(loaded.entrypointContent).toContain('Use the checklist.');
+    expect(loaded.resolvedTools).toEqual([
+      {
+        packageKey: 'tool:@zack/capitalize@0.1.0',
+        kind: 'tool',
+        name: '@zack/capitalize',
+        version: '0.1.0',
+        integrity: 'sha256-tool',
+        root: expect.stringContaining('.agentpm/tools'),
+        manifestPath: expect.stringContaining('.agentpm/tools'),
+      },
+    ]);
+  });
 });
