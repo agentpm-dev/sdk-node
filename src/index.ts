@@ -1184,6 +1184,102 @@ export async function loadAgent(
   };
 }
 
+function resolvedToolsFromLockKeys(
+  toolKeys: string[],
+  packages: Record<string, LockedPackage>,
+  toolDirOverride?: string,
+): ResolvedAgentToolRef[] {
+  return toolKeys.flatMap((toolKey) => {
+    const pkg = packages[toolKey];
+    if (!pkg || pkg.kind !== 'tool') return [];
+
+    const installed = resolveToolInstalledPath(pkg.name, pkg.version, toolDirOverride);
+    return [
+      {
+        packageKey: toolKey,
+        kind: 'tool',
+        name: pkg.name,
+        version: pkg.version,
+        integrity: pkg.integrity,
+        root: installed?.root ?? null,
+        manifestPath: installed?.manifestPath ?? null,
+      },
+    ];
+  });
+}
+
+function parseDependencyReference(ref: DependencyReference): {
+  name: string;
+  version: string | null;
+} {
+  if (typeof ref === 'string') {
+    const atIdx = ref.lastIndexOf('@');
+    if (atIdx <= 0 || atIdx === ref.length - 1) {
+      return { name: ref, version: null };
+    }
+    return {
+      name: ref.slice(0, atIdx),
+      version: ref.slice(atIdx + 1),
+    };
+  }
+
+  return {
+    name: ref.name,
+    version: ref.version ?? null,
+  };
+}
+
+function resolvedToolsFromSkillManifest(
+  skillSpecName: string,
+  skillVersion: string,
+  toolRefs: DependencyReference[],
+  packages: Record<string, LockedPackage>,
+  lockfilePath: string,
+  toolDirOverride?: string,
+): ResolvedAgentToolRef[] {
+  return toolRefs.map((ref) => {
+    const { name, version } = parseDependencyReference(ref);
+
+    let toolKey: string;
+    let pkg: LockedPackage | undefined;
+    if (version == null) {
+      const matches = Object.entries(packages).filter(
+        ([, candidate]) => candidate.kind === 'tool' && candidate.name === name,
+      );
+      if (matches.length !== 1) {
+        throw new Error(
+          `Skill "${skillSpecName}@${skillVersion}" declares tool dependency "${name}" without an exact version, and it could not be resolved uniquely from ${lockfilePath}.`,
+        );
+      }
+      [toolKey, pkg] = matches[0];
+    } else {
+      toolKey = `tool:${name}@${version}`;
+      pkg = packages[toolKey];
+      if (!pkg || pkg.kind !== 'tool') {
+        throw new Error(
+          `Skill "${skillSpecName}@${skillVersion}" declares tool dependency "${name}@${version}" that is not present in ${lockfilePath}. Run "agentpm install" to refresh the lockfile.`,
+        );
+      }
+    }
+    const resolvedPkg = pkg!;
+
+    const installed = resolveToolInstalledPath(
+      resolvedPkg.name,
+      resolvedPkg.version,
+      toolDirOverride,
+    );
+    return {
+      packageKey: toolKey,
+      kind: 'tool' as const,
+      name: resolvedPkg.name,
+      version: resolvedPkg.version,
+      integrity: resolvedPkg.integrity,
+      root: installed?.root ?? null,
+      manifestPath: installed?.manifestPath ?? null,
+    };
+  });
+}
+
 export async function loadSkill(
   spec: string,
   options: LoadSkillOptions = {},
@@ -1201,29 +1297,17 @@ export async function loadSkill(
   const lock = readLockfileV2(lockfilePath);
   const packageKey = `skill:${packageName}@${manifest.version}`;
   const rootEntry = lock.roots?.[packageKey];
-  if (!rootEntry) {
-    throw new Error(
-      `Skill root "${packageKey}" not found in ${lockfilePath}; install the skill with agentpm install first.`,
-    );
-  }
-
-  const resolvedTools: ResolvedAgentToolRef[] = (rootEntry.tools ?? []).flatMap((toolKey) => {
-    const pkg = lock.packages?.[toolKey];
-    if (!pkg || pkg.kind !== 'tool') return [];
-
-    const installed = resolveToolInstalledPath(pkg.name, pkg.version, options.toolDirOverride);
-    return [
-      {
-        packageKey: toolKey,
-        kind: 'tool',
-        name: pkg.name,
-        version: pkg.version,
-        integrity: pkg.integrity,
-        root: installed?.root ?? null,
-        manifestPath: installed?.manifestPath ?? null,
-      },
-    ];
-  });
+  const packages = lock.packages ?? {};
+  const resolvedTools: ResolvedAgentToolRef[] = rootEntry
+    ? resolvedToolsFromLockKeys(rootEntry.tools ?? [], packages, options.toolDirOverride)
+    : resolvedToolsFromSkillManifest(
+        packageName,
+        manifest.version,
+        manifest.tools ?? [],
+        packages,
+        lockfilePath,
+        options.toolDirOverride,
+      );
 
   const entrypointPath = resolve(root, manifest.skill.entrypoint);
   const entrypointContent = readFileSync(entrypointPath, 'utf-8');
