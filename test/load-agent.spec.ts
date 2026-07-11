@@ -86,11 +86,57 @@ function makeInstalledAgent(baseDir: string, spec: string, skillRef: string) {
   );
 }
 
+function makeInstalledKnowledge(baseDir: string, spec: string, mode: 'context' | 'vector') {
+  const atIdx = spec.lastIndexOf('@');
+  const packageName = spec.slice(0, atIdx);
+  const version = spec.slice(atIdx + 1);
+  const root = join(baseDir, `${packageName}/${version}`);
+  const manifestName = packageName.slice(packageName.indexOf('/') + 1);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, 'agent.json'),
+    JSON.stringify(
+      mode === 'context'
+        ? {
+            kind: 'knowledge',
+            name: manifestName,
+            version,
+            description: 'Installed knowledge fixture',
+            knowledge: {
+              mode: 'context',
+              documents: [{ path: 'knowledge/docs/context.md' }],
+            },
+          }
+        : {
+            kind: 'knowledge',
+            name: manifestName,
+            version,
+            description: 'Installed knowledge fixture',
+            knowledge: {
+              mode: 'vector',
+              corpus: {
+                chunks_path: 'knowledge/chunks.jsonl',
+                sources_path: 'knowledge/sources.jsonl',
+              },
+              embedding: {
+                vectors_path: 'knowledge/embeddings/default.f32',
+              },
+              indexes: [{ path: 'knowledge/indexes/default' }],
+            },
+          },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
 describe('agentpm node sdk - loadAgent', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-agent-test-'));
   const toolsDir = join(tmp, '.agentpm', 'tools');
   const agentsDir = join(tmp, '.agentpm', 'agents');
   const skillsDir = join(tmp, '.agentpm', 'skills');
+  const knowledgeDir = join(tmp, '.agentpm', 'knowledge');
   const lockfilePath = join(tmp, 'agent.lock');
   const agentSpec = '@zack/support-agent@0.1.0';
   const newerAgentSpec = '@zack/support-agent@0.2.0';
@@ -99,6 +145,8 @@ describe('agentpm node sdk - loadAgent', () => {
     makeInstalledTool(toolsDir, '@zack/capitalize@0.1.0');
     makeInstalledSkill(skillsDir, '@zack/triage-skill@0.1.0');
     makeInstalledSkill(skillsDir, '@zack/triage-skill@0.2.0');
+    makeInstalledKnowledge(knowledgeDir, '@zack/python-docs@0.1.0', 'vector');
+    makeInstalledKnowledge(knowledgeDir, '@zack/support-playbook@0.1.0', 'context');
     makeInstalledAgent(agentsDir, agentSpec, '@zack/triage-skill@0.1.0');
     makeInstalledAgent(agentsDir, newerAgentSpec, '@zack/triage-skill@0.2.0');
     writeFileSync(
@@ -138,11 +186,24 @@ describe('agentpm node sdk - loadAgent', () => {
               version: '0.2.0',
               integrity: 'sha256-skill-2',
             },
+            'knowledge:@zack/python-docs@0.1.0': {
+              kind: 'knowledge',
+              name: '@zack/python-docs',
+              version: '0.1.0',
+              integrity: 'sha256-knowledge',
+            },
+            'knowledge:@zack/support-playbook@0.1.0': {
+              kind: 'knowledge',
+              name: '@zack/support-playbook',
+              version: '0.1.0',
+              integrity: 'sha256-knowledge-context',
+            },
           },
           roots: {
             'agent:@zack/support-agent@0.1.0': {
               tools: ['tool:@zack/capitalize@0.1.0'],
               skills: ['skill:@zack/triage-skill@0.1.0'],
+              knowledge: ['knowledge:@zack/python-docs@0.1.0'],
               reserved: {
                 knowledge: [],
                 memory: [],
@@ -152,6 +213,7 @@ describe('agentpm node sdk - loadAgent', () => {
             'agent:@zack/support-agent@0.2.0': {
               tools: ['tool:@zack/capitalize@0.1.0'],
               skills: ['skill:@zack/triage-skill@0.2.0'],
+              knowledge: ['knowledge:@zack/support-playbook@0.1.0'],
               reserved: {
                 knowledge: [],
                 memory: [],
@@ -176,6 +238,7 @@ describe('agentpm node sdk - loadAgent', () => {
       agentDirOverride: agentsDir,
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
+      knowledgeDirOverride: knowledgeDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -202,6 +265,18 @@ describe('agentpm node sdk - loadAgent', () => {
         integrity: 'sha256-skill',
         root: expect.stringContaining('.agentpm/skills'),
         manifestPath: expect.stringContaining('.agentpm/skills'),
+      },
+    ]);
+    expect(loaded.resolvedKnowledge).toEqual([
+      {
+        packageKey: 'knowledge:@zack/python-docs@0.1.0',
+        kind: 'knowledge',
+        name: '@zack/python-docs',
+        version: '0.1.0',
+        integrity: 'sha256-knowledge',
+        mode: 'vector',
+        root: expect.stringContaining('.agentpm/knowledge'),
+        manifestPath: expect.stringContaining('.agentpm/knowledge'),
       },
     ]);
   });
@@ -250,6 +325,7 @@ describe('agentpm node sdk - loadAgent', () => {
       agentDirOverride: agentsDir,
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
+      knowledgeDirOverride: knowledgeDir,
       lockfileOverride: legacyLockfilePath,
     });
 
@@ -260,6 +336,7 @@ describe('agentpm node sdk - loadAgent', () => {
     });
     expect('skills' in loaded.reserved).toBe(false);
     expect(loaded.resolvedSkills).toEqual([]);
+    expect(loaded.resolvedKnowledge).toEqual([]);
   });
 
   it('resolves latest agent versions from the installed agents layout', async () => {
@@ -267,6 +344,7 @@ describe('agentpm node sdk - loadAgent', () => {
       agentDirOverride: agentsDir,
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
+      knowledgeDirOverride: knowledgeDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -279,6 +357,7 @@ describe('agentpm node sdk - loadAgent', () => {
       agentDirOverride: agentsDir,
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
+      knowledgeDirOverride: knowledgeDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -292,6 +371,7 @@ describe('agentpm node sdk - loadAgent', () => {
         agentDirOverride: agentsDir,
         skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
+        knowledgeDirOverride: knowledgeDir,
         lockfileOverride: join(tmp, 'missing-agent.lock'),
       }),
     ).rejects.toThrow(/agentpm install/i);
@@ -318,6 +398,7 @@ describe('agentpm node sdk - loadAgent', () => {
         agentDirOverride: agentsDir,
         skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
+        knowledgeDirOverride: knowledgeDir,
         lockfileOverride: v1LockfilePath,
       }),
     ).rejects.toThrow(/agentpm install/i);
@@ -352,6 +433,7 @@ describe('agentpm node sdk - loadAgent', () => {
         agentDirOverride: agentsDir,
         skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
+        knowledgeDirOverride: knowledgeDir,
         lockfileOverride: wrongRootLockfilePath,
       }),
     ).rejects.toThrow(/install the agent with agentpm install first/i);
@@ -401,6 +483,7 @@ describe('agentpm node sdk - loadAgent', () => {
       agentDirOverride: agentsDir,
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
+      knowledgeDirOverride: knowledgeDir,
       lockfileOverride: missingToolLockfilePath,
     });
 
@@ -411,6 +494,69 @@ describe('agentpm node sdk - loadAgent', () => {
         name: '@zack/missing-tool',
         version: '0.9.0',
         integrity: 'sha256-missing-tool',
+        root: null,
+        manifestPath: null,
+      },
+    ]);
+  });
+
+  it('returns knowledge metadata even when a resolved knowledge package is missing on disk', async () => {
+    const missingKnowledgeLockfilePath = join(tmp, 'agent-missing-knowledge.lock');
+    writeFileSync(
+      missingKnowledgeLockfilePath,
+      JSON.stringify(
+        {
+          lockfile_version: 3,
+          generated: '2026-05-23T00:00:00Z',
+          packages: {
+            'agent:@zack/support-agent@0.1.0': {
+              kind: 'agent',
+              name: '@zack/support-agent',
+              version: '0.1.0',
+              integrity: 'sha256-agent',
+            },
+            'knowledge:@zack/missing-docs@0.9.0': {
+              kind: 'knowledge',
+              name: '@zack/missing-docs',
+              version: '0.9.0',
+              integrity: 'sha256-missing-knowledge',
+            },
+          },
+          roots: {
+            'agent:@zack/support-agent@0.1.0': {
+              tools: [],
+              skills: [],
+              knowledge: ['knowledge:@zack/missing-docs@0.9.0'],
+              reserved: {
+                knowledge: [],
+                memory: [],
+                profiles: [],
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const loaded = await loadAgent(agentSpec, {
+      agentDirOverride: agentsDir,
+      skillDirOverride: skillsDir,
+      toolDirOverride: toolsDir,
+      knowledgeDirOverride: knowledgeDir,
+      lockfileOverride: missingKnowledgeLockfilePath,
+    });
+
+    expect(loaded.resolvedKnowledge).toEqual([
+      {
+        packageKey: 'knowledge:@zack/missing-docs@0.9.0',
+        kind: 'knowledge',
+        name: '@zack/missing-docs',
+        version: '0.9.0',
+        integrity: 'sha256-missing-knowledge',
+        mode: null,
         root: null,
         manifestPath: null,
       },

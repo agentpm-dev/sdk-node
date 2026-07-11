@@ -107,11 +107,13 @@ function makeFailingToolPackage(baseDir: string, spec: string) {
 describe('agentpm node sdk - load + toLangChainTool', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-test-'));
   const skillsDir = join(tmp, 'skills');
+  const knowledgeDir = join(tmp, 'knowledge');
   const okSpec = '@zack/summarize@0.1.0';
   const bashCommandSpec = '@zack/scrape@0.1.0';
   const failSpec = '@zack/fail@0.1.0';
   const withEnvSpec = '@zack/with-env@0.1.0';
   const skillSpec = '@zack/triage-playbook@0.1.0';
+  const knowledgeSpec = '@zack/python-docs@0.1.0';
 
   beforeAll(() => {
     makeToolPackage(tmp, okSpec);
@@ -143,10 +145,35 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
     );
     writeFileSync(join(root, 'SKILL.md'), '# Playbook\n', 'utf8');
     process.env.AGENTPM_SKILL_DIR = skillsDir;
+
+    const knowledgeAtIdx = knowledgeSpec.lastIndexOf('@');
+    const knowledgeName = knowledgeSpec.slice(0, knowledgeAtIdx);
+    const knowledgeVersion = knowledgeSpec.slice(knowledgeAtIdx + 1);
+    const knowledgeRoot = join(knowledgeDir, `${knowledgeName}/${knowledgeVersion}`);
+    mkdirSync(knowledgeRoot, { recursive: true });
+    writeFileSync(
+      join(knowledgeRoot, 'agent.json'),
+      JSON.stringify(
+        {
+          kind: 'knowledge',
+          name: 'python-docs',
+          version: knowledgeVersion,
+          description: 'Knowledge fixture',
+          knowledge: {
+            mode: 'vector',
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    process.env.AGENTPM_KNOWLEDGE_DIR = knowledgeDir;
   });
 
   afterAll(() => {
     delete process.env.AGENTPM_SKILL_DIR;
+    delete process.env.AGENTPM_KNOWLEDGE_DIR;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -236,6 +263,12 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   it('rejects uninstalled skill-like specs with guidance to use loadSkill', async () => {
     await expect(load('@zack/missing-skill@0.1.0', { toolDirOverride: tmp })).rejects.toThrow(
       /use loadSkill/i,
+    );
+  });
+
+  it('rejects installed knowledge specs with guidance to use loadKnowledge', async () => {
+    await expect(load(knowledgeSpec, { toolDirOverride: tmp })).rejects.toThrow(
+      /use loadKnowledge/i,
     );
   });
 });
