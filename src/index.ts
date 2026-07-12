@@ -74,6 +74,90 @@ export type SkillMeta = {
   skill: SkillMetadata;
 };
 
+export type KnowledgeMode = 'context' | 'vector';
+
+export type KnowledgeDocument = {
+  path: string;
+  content_type?: string;
+  role?: string;
+  description?: string;
+  bytes?: number;
+  sha256?: string;
+};
+
+export type KnowledgeContext = {
+  document_count?: number;
+  total_bytes?: number;
+  content_hash?: string;
+};
+
+export type KnowledgeCorpus = {
+  chunks_path?: string;
+  sources_path?: string;
+  chunk_count?: number;
+  source_count?: number;
+  content_hash?: string;
+};
+
+export type KnowledgeEmbedding = {
+  id?: string;
+  provider?: string;
+  model?: string;
+  dimensions?: number;
+  metric?: string;
+  normalized?: boolean;
+  vectors_path?: string;
+  vector_count?: number;
+  vectors_hash?: string;
+};
+
+export type KnowledgeIndex = {
+  id?: string;
+  type?: string;
+  path?: string;
+  embedding_id?: string;
+  generated_by?: string;
+};
+
+export type KnowledgeRetrieval = {
+  strategy?: string;
+  default_top_k?: number;
+  default_score_threshold?: number;
+  return_citations?: boolean;
+};
+
+export type KnowledgeBuilder = {
+  name?: string;
+  version?: string;
+};
+
+export type KnowledgeProvenance = {
+  sources_manifest_path?: string;
+  generated_at?: string;
+  builder?: KnowledgeBuilder;
+};
+
+export type KnowledgeMetadata = {
+  mode: KnowledgeMode;
+  content_type?: string;
+  language?: string;
+  documents?: KnowledgeDocument[];
+  context?: KnowledgeContext;
+  corpus?: KnowledgeCorpus;
+  embedding?: KnowledgeEmbedding;
+  indexes?: KnowledgeIndex[];
+  retrieval?: KnowledgeRetrieval;
+  provenance?: KnowledgeProvenance;
+};
+
+export type KnowledgeMeta = {
+  kind: 'knowledge';
+  name: string;
+  version: string;
+  description?: string;
+  knowledge: KnowledgeMetadata;
+};
+
 type Runtime = {
   type: string;
   version: string;
@@ -101,6 +185,7 @@ type Manifest = ToolMeta & {
 
 type AgentManifest = AgentMeta;
 type SkillManifest = SkillMeta;
+type KnowledgeManifest = KnowledgeMeta;
 
 export type LoadOptions = {
   withMeta?: boolean;
@@ -114,6 +199,7 @@ export type LoadAgentOptions = {
   agentDirOverride?: string;
   skillDirOverride?: string;
   toolDirOverride?: string;
+  knowledgeDirOverride?: string;
   lockfileOverride?: string;
 };
 
@@ -121,6 +207,10 @@ export type LoadSkillOptions = {
   skillDirOverride?: string;
   toolDirOverride?: string;
   lockfileOverride?: string;
+};
+
+export type LoadKnowledgeOptions = {
+  knowledgeDirOverride?: string;
 };
 
 type Loaded =
@@ -147,6 +237,17 @@ export type ResolvedAgentSkillRef = {
   manifestPath: string | null;
 };
 
+export type ResolvedAgentKnowledgeRef = {
+  packageKey: string;
+  kind: 'knowledge';
+  name: string;
+  version: string;
+  integrity: string;
+  mode: KnowledgeMode | null;
+  root: string | null;
+  manifestPath: string | null;
+};
+
 export type ReservedReferences = {
   knowledge: DependencyReference[];
   memory: DependencyReference[];
@@ -159,6 +260,7 @@ export type LoadedAgent = {
   manifest: AgentManifest;
   resolvedTools: ResolvedAgentToolRef[];
   resolvedSkills: ResolvedAgentSkillRef[];
+  resolvedKnowledge: ResolvedAgentKnowledgeRef[];
   reserved: ReservedReferences;
 };
 
@@ -178,6 +280,23 @@ export type LoadedSkill = {
   resolvedTools: ResolvedAgentToolRef[];
 };
 
+export type LoadedKnowledge = {
+  kind: 'knowledge';
+  name: string;
+  version: string;
+  description?: string;
+  root: string;
+  manifestPath: string;
+  manifest: KnowledgeManifest;
+  knowledge: KnowledgeMetadata;
+  documentPaths: string[];
+  chunksPath: string | null;
+  sourcesPath: string | null;
+  vectorsPath: string | null;
+  indexPaths: string[];
+  provenancePath: string | null;
+};
+
 type LockedPackage = {
   kind: string;
   name: string;
@@ -190,6 +309,7 @@ type LockedRoot = {
   version?: string;
   tools?: string[];
   skills?: string[];
+  knowledge?: string[];
   reserved?: Partial<ReservedReferences>;
 };
 
@@ -620,6 +740,58 @@ function resolveSkillRoot(spec: string, skillDirOverride?: string) {
   );
 }
 
+function resolveKnowledgeRoot(spec: string, knowledgeDirOverride?: string) {
+  const atIdx = spec.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === spec.length - 1) {
+    throw new Error(`Invalid knowledge spec "${spec}". Expected "@scope/name@version".`);
+  }
+  const rangeOrVersion = spec.slice(atIdx + 1).trim();
+  const name = spec.slice(0, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
+
+  const candidates = [
+    knowledgeDirOverride,
+    process.env.AGENTPM_KNOWLEDGE_DIR,
+    resolve(projectRoot, '.agentpm/knowledge'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/knowledge') : undefined,
+  ].filter(Boolean) as string[];
+
+  if (semver.valid(rangeOrVersion)) {
+    for (const base of candidates) {
+      const hit = findInstalled(base, name, rangeOrVersion);
+      if (hit) return { ...hit, packageName: name };
+    }
+    throw new Error(`Knowledge package "${spec}" not found in .agentpm/knowledge (or overrides).`);
+  }
+
+  const isLatest = rangeOrVersion.toLowerCase() === 'latest';
+  const isRange = semver.validRange(rangeOrVersion) !== null;
+  if (!isLatest && !isRange) {
+    throw new Error(
+      `Invalid version/range "${rangeOrVersion}". Use exact (e.g. 0.1.2), a semver range (e.g. ^0.1), or "latest".`,
+    );
+  }
+
+  for (const base of candidates) {
+    const installed = listInstalledVersions(base, name);
+    if (installed.length === 0) continue;
+
+    const picked = isLatest
+      ? semver.rsort(installed)[0]!
+      : semver.maxSatisfying(installed, rangeOrVersion, { includePrerelease: false });
+
+    if (!picked) continue;
+
+    const hit = findInstalled(base, name, picked);
+    if (hit) return { ...hit, packageName: name };
+  }
+
+  const searched = candidates.join(', ');
+  throw new Error(
+    `No installed version of "${name}" matches "${rangeOrVersion}". Searched: ${searched}`,
+  );
+}
+
 function readManifest(path: string): Manifest {
   const raw = readFileSync(path, 'utf-8');
   const m = JSON.parse(raw);
@@ -646,6 +818,18 @@ function readSkillManifest(path: string): SkillManifest {
   }
   if (!manifest.skill?.entrypoint) {
     throw new Error(`agent.json missing skill.entrypoint at: ${path}`);
+  }
+  return manifest;
+}
+
+function readKnowledgeManifest(path: string): KnowledgeManifest {
+  const raw = readFileSync(path, 'utf-8');
+  const manifest = JSON.parse(raw) as KnowledgeManifest;
+  if (manifest?.kind !== 'knowledge') {
+    throw new Error(`agent.json is not a knowledge manifest at: ${path}`);
+  }
+  if (!manifest.knowledge?.mode) {
+    throw new Error(`agent.json missing knowledge.mode at: ${path}`);
   }
   return manifest;
 }
@@ -700,6 +884,26 @@ function resolveSkillInstalledPath(
     process.env.AGENTPM_SKILL_DIR,
     resolve(projectRoot, '.agentpm/skills'),
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/skills') : undefined,
+  ].filter(Boolean) as string[];
+
+  for (const base of candidates) {
+    const hit = findInstalled(base, name, version);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function resolveKnowledgeInstalledPath(
+  name: string,
+  version: string,
+  knowledgeDirOverride?: string,
+): { root: string; manifestPath: string } | null {
+  const projectRoot = findProjectRoot(process.cwd());
+  const candidates = [
+    knowledgeDirOverride,
+    process.env.AGENTPM_KNOWLEDGE_DIR,
+    resolve(projectRoot, '.agentpm/knowledge'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/knowledge') : undefined,
   ].filter(Boolean) as string[];
 
   for (const base of candidates) {
@@ -1033,12 +1237,22 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
       if (skillErr instanceof Error && skillErr.message.includes('loadSkill(')) {
         throw skillErr;
       }
-      if (err instanceof Error && err.message.includes('not found in .agentpm/tools')) {
+      try {
+        resolveKnowledgeRoot(spec);
         throw new Error(
-          `${err.message} If this package is a Skill, use loadSkill("${spec}") instead.`,
+          `Package "${spec}" is Knowledge. load() is tool-only; use loadKnowledge("${spec}") instead.`,
         );
+      } catch (knowledgeErr) {
+        if (knowledgeErr instanceof Error && knowledgeErr.message.includes('loadKnowledge(')) {
+          throw knowledgeErr;
+        }
+        if (err instanceof Error && err.message.includes('not found in .agentpm/tools')) {
+          throw new Error(
+            `${err.message} If this package is a Skill, use loadSkill("${spec}") instead. If it is Knowledge, use loadKnowledge("${spec}") instead.`,
+          );
+        }
+        throw err;
       }
-      throw err;
     }
   }
   const manifest = readManifest(manifestPath);
@@ -1174,12 +1388,39 @@ export async function loadAgent(
     ];
   });
 
+  const resolvedKnowledge: ResolvedAgentKnowledgeRef[] = (rootEntry.knowledge ?? []).flatMap(
+    (knowledgeKey) => {
+      const pkg = lock.packages?.[knowledgeKey];
+      if (!pkg || pkg.kind !== 'knowledge') return [];
+
+      const installed = resolveKnowledgeInstalledPath(
+        pkg.name,
+        pkg.version,
+        options.knowledgeDirOverride,
+      );
+      const manifest = installed ? readKnowledgeManifest(installed.manifestPath) : null;
+      return [
+        {
+          packageKey: knowledgeKey,
+          kind: 'knowledge' as const,
+          name: pkg.name,
+          version: pkg.version,
+          integrity: pkg.integrity,
+          mode: manifest?.knowledge.mode ?? null,
+          root: installed?.root ?? null,
+          manifestPath: installed?.manifestPath ?? null,
+        },
+      ];
+    },
+  );
+
   return {
     root,
     manifestPath,
     manifest,
     resolvedTools,
     resolvedSkills,
+    resolvedKnowledge,
     reserved,
   };
 }
@@ -1326,5 +1567,50 @@ export async function loadSkill(
     references: manifest.skill.references ?? [],
     scripts: manifest.skill.scripts ?? [],
     resolvedTools,
+  };
+}
+
+export async function loadKnowledge(
+  spec: string,
+  options: LoadKnowledgeOptions = {},
+): Promise<LoadedKnowledge> {
+  const { root, manifestPath } = resolveKnowledgeRoot(spec, options.knowledgeDirOverride);
+  const manifest = readKnowledgeManifest(manifestPath);
+
+  const documentPaths = (manifest.knowledge.documents ?? []).map((document) =>
+    resolve(root, document.path),
+  );
+  const chunksPath = manifest.knowledge.corpus?.chunks_path
+    ? resolve(root, manifest.knowledge.corpus.chunks_path)
+    : null;
+  const sourcesPath = manifest.knowledge.corpus?.sources_path
+    ? resolve(root, manifest.knowledge.corpus.sources_path)
+    : null;
+  const vectorsPath = manifest.knowledge.embedding?.vectors_path
+    ? resolve(root, manifest.knowledge.embedding.vectors_path)
+    : null;
+  const indexPaths = (manifest.knowledge.indexes ?? [])
+    .map((index) => index.path)
+    .filter((value): value is string => typeof value === 'string' && value.length > 0)
+    .map((indexPath) => resolve(root, indexPath));
+  const provenancePath = manifest.knowledge.provenance?.sources_manifest_path
+    ? resolve(root, manifest.knowledge.provenance.sources_manifest_path)
+    : null;
+
+  return {
+    kind: 'knowledge',
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    root,
+    manifestPath,
+    manifest,
+    knowledge: manifest.knowledge,
+    documentPaths,
+    chunksPath,
+    sourcesPath,
+    vectorsPath,
+    indexPaths,
+    provenancePath,
   };
 }
