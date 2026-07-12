@@ -25,7 +25,7 @@ jobs:
       - name: Setup Node (npm registry + cache)
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 24
           cache: pnpm
           registry-url: 'https://registry.npmjs.org'
 
@@ -52,8 +52,8 @@ jobs:
           echo "OWNER=${GITHUB_REPOSITORY%%/*}"  # e.g. agentpm-dev
           echo "REF=$GITHUB_REF"                 # e.g. refs/tags/v0.1.1
 
-      - name: Ensure compatible npm
-        run: npm i -g npm@10
+      - name: Ensure modern npm
+        run: npm i -g npm@latest
 
       # -- Recommended (OIDC / Trusted Publisher + provenance) --
       # 1) Enable "Trusted publishers" for this package on npmjs.com
