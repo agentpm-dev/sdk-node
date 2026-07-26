@@ -131,12 +131,106 @@ function makeInstalledKnowledge(baseDir: string, spec: string, mode: 'context' |
   );
 }
 
+function makeInstalledMemory(baseDir: string, spec: string) {
+  const atIdx = spec.lastIndexOf('@');
+  const packageName = spec.slice(0, atIdx);
+  const version = spec.slice(atIdx + 1);
+  const root = join(baseDir, `${packageName}/${version}`);
+  const manifestName = packageName.slice(packageName.indexOf('/') + 1);
+  mkdirSync(join(root, 'schemas'), { recursive: true });
+  mkdirSync(join(root, 'memory', 'contracts'), { recursive: true });
+  writeFileSync(
+    join(root, 'agent.json'),
+    JSON.stringify(
+      {
+        kind: 'memory',
+        name: manifestName,
+        version,
+        description: 'Installed memory fixture',
+        memory: {
+          scopes: { user: { description: 'User scope' } },
+          record_types: {
+            user_preference: {
+              schema: 'schemas/user-preference.schema.json',
+              version: '1.0.0',
+            },
+          },
+          spaces: {
+            profile: {
+              model: 'document',
+              scope: ['user'],
+              record_types: ['user_preference'],
+              retrieval: { modes: ['key'] },
+            },
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  writeFileSync(
+    join(root, 'schemas', 'user-preference.schema.json'),
+    JSON.stringify({ type: 'object' }, null, 2),
+    'utf8',
+  );
+  writeFileSync(
+    join(root, 'memory', 'build.json'),
+    JSON.stringify(
+      {
+        type: 'agentpm-memory-contracts',
+        format_version: 1,
+        manifest_path: 'agent.json',
+        source_manifest_hash: 'sha256:manifest',
+        source_schemas_hash: 'sha256:schemas',
+        source_contract_inputs_hash: 'sha256:inputs',
+        contracts_index_hash: 'sha256:index',
+        contracts_hash: 'sha256:contracts',
+        contract_count: 1,
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  writeFileSync(
+    join(root, 'memory', 'contracts', 'index.json'),
+    JSON.stringify(
+      {
+        type: 'agentpm-memory-contract-index',
+        format_version: 1,
+        contracts: [
+          {
+            space: 'profile',
+            record_type: 'user_preference',
+            schema_version: '1.0.0',
+            model: 'document',
+            source_schema: 'schemas/user-preference.schema.json',
+            path: 'memory/contracts/profile.user_preference.schema.json',
+            sha256: 'sha256:contract',
+          },
+        ],
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  writeFileSync(
+    join(root, 'memory', 'contracts', 'profile.user_preference.schema.json'),
+    JSON.stringify({ type: 'object' }, null, 2),
+    'utf8',
+  );
+}
+
 describe('agentpm node sdk - loadAgent', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-agent-test-'));
   const toolsDir = join(tmp, '.agentpm', 'tools');
   const agentsDir = join(tmp, '.agentpm', 'agents');
   const skillsDir = join(tmp, '.agentpm', 'skills');
   const knowledgeDir = join(tmp, '.agentpm', 'knowledge');
+  const memoryDir = join(tmp, '.agentpm', 'memory');
   const lockfilePath = join(tmp, 'agent.lock');
   const agentSpec = '@zack/support-agent@0.1.0';
   const newerAgentSpec = '@zack/support-agent@0.2.0';
@@ -147,6 +241,7 @@ describe('agentpm node sdk - loadAgent', () => {
     makeInstalledSkill(skillsDir, '@zack/triage-skill@0.2.0');
     makeInstalledKnowledge(knowledgeDir, '@zack/python-docs@0.1.0', 'vector');
     makeInstalledKnowledge(knowledgeDir, '@zack/support-playbook@0.1.0', 'context');
+    makeInstalledMemory(memoryDir, '@zack/profile-memory@0.1.0');
     makeInstalledAgent(agentsDir, agentSpec, '@zack/triage-skill@0.1.0');
     makeInstalledAgent(agentsDir, newerAgentSpec, '@zack/triage-skill@0.2.0');
     writeFileSync(
@@ -198,12 +293,19 @@ describe('agentpm node sdk - loadAgent', () => {
               version: '0.1.0',
               integrity: 'sha256-knowledge-context',
             },
+            'memory:@zack/profile-memory@0.1.0': {
+              kind: 'memory',
+              name: '@zack/profile-memory',
+              version: '0.1.0',
+              integrity: 'sha256-memory',
+            },
           },
           roots: {
             'agent:@zack/support-agent@0.1.0': {
               tools: ['tool:@zack/capitalize@0.1.0'],
               skills: ['skill:@zack/triage-skill@0.1.0'],
               knowledge: ['knowledge:@zack/python-docs@0.1.0'],
+              memory: ['memory:@zack/profile-memory@0.1.0'],
               reserved: {
                 knowledge: [],
                 memory: [],
@@ -239,6 +341,7 @@ describe('agentpm node sdk - loadAgent', () => {
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
+      memoryDirOverride: memoryDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -277,6 +380,17 @@ describe('agentpm node sdk - loadAgent', () => {
         mode: 'vector',
         root: expect.stringContaining('.agentpm/knowledge'),
         manifestPath: expect.stringContaining('.agentpm/knowledge'),
+      },
+    ]);
+    expect(loaded.resolvedMemory).toEqual([
+      {
+        packageKey: 'memory:@zack/profile-memory@0.1.0',
+        kind: 'memory',
+        name: '@zack/profile-memory',
+        version: '0.1.0',
+        integrity: 'sha256-memory',
+        root: expect.stringContaining('.agentpm/memory'),
+        manifestPath: expect.stringContaining('.agentpm/memory'),
       },
     ]);
   });
@@ -326,6 +440,7 @@ describe('agentpm node sdk - loadAgent', () => {
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
+      memoryDirOverride: memoryDir,
       lockfileOverride: legacyLockfilePath,
     });
 
@@ -337,6 +452,7 @@ describe('agentpm node sdk - loadAgent', () => {
     expect('skills' in loaded.reserved).toBe(false);
     expect(loaded.resolvedSkills).toEqual([]);
     expect(loaded.resolvedKnowledge).toEqual([]);
+    expect(loaded.resolvedMemory).toEqual([]);
   });
 
   it('resolves latest agent versions from the installed agents layout', async () => {
@@ -345,6 +461,7 @@ describe('agentpm node sdk - loadAgent', () => {
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
+      memoryDirOverride: memoryDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -358,11 +475,70 @@ describe('agentpm node sdk - loadAgent', () => {
       skillDirOverride: skillsDir,
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
+      memoryDirOverride: memoryDir,
       lockfileOverride: lockfilePath,
     });
 
     expect(loaded.manifest.version).toBe('0.2.0');
     expect(loaded.resolvedSkills[0]?.version).toBe('0.2.0');
+  });
+
+  it('keeps memory refs from the lockfile even when the installed package is missing on disk', async () => {
+    const missingMemoryLockfilePath = join(tmp, 'agent-missing-memory.lock');
+    writeFileSync(
+      missingMemoryLockfilePath,
+      JSON.stringify(
+        {
+          lockfile_version: 3,
+          generated: '2026-05-23T00:00:00Z',
+          packages: {
+            'agent:@zack/support-agent@0.1.0': {
+              kind: 'agent',
+              name: '@zack/support-agent',
+              version: '0.1.0',
+              integrity: 'sha256-agent',
+            },
+            'memory:@zack/missing-memory@0.9.0': {
+              kind: 'memory',
+              name: '@zack/missing-memory',
+              version: '0.9.0',
+              integrity: 'sha256-missing-memory',
+            },
+          },
+          roots: {
+            'agent:@zack/support-agent@0.1.0': {
+              memory: ['memory:@zack/missing-memory@0.9.0'],
+              reserved: {
+                knowledge: [],
+                memory: [],
+                profiles: [],
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const loaded = await loadAgent(agentSpec, {
+      agentDirOverride: agentsDir,
+      memoryDirOverride: memoryDir,
+      lockfileOverride: missingMemoryLockfilePath,
+    });
+
+    expect(loaded.resolvedMemory).toEqual([
+      {
+        packageKey: 'memory:@zack/missing-memory@0.9.0',
+        kind: 'memory',
+        name: '@zack/missing-memory',
+        version: '0.9.0',
+        integrity: 'sha256-missing-memory',
+        root: null,
+        manifestPath: null,
+      },
+    ]);
   });
 
   it('fails with an actionable error when agent.lock is missing', async () => {
@@ -372,6 +548,7 @@ describe('agentpm node sdk - loadAgent', () => {
         skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
         knowledgeDirOverride: knowledgeDir,
+        memoryDirOverride: memoryDir,
         lockfileOverride: join(tmp, 'missing-agent.lock'),
       }),
     ).rejects.toThrow(/agentpm install/i);
@@ -399,6 +576,7 @@ describe('agentpm node sdk - loadAgent', () => {
         skillDirOverride: skillsDir,
         toolDirOverride: toolsDir,
         knowledgeDirOverride: knowledgeDir,
+        memoryDirOverride: memoryDir,
         lockfileOverride: v1LockfilePath,
       }),
     ).rejects.toThrow(/agentpm install/i);

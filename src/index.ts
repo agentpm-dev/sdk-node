@@ -158,6 +158,126 @@ export type KnowledgeMeta = {
   knowledge: KnowledgeMetadata;
 };
 
+export type MemoryScope = {
+  description?: string;
+};
+
+export type MemoryRecordType = {
+  description?: string;
+  schema: string;
+  version: string;
+};
+
+export type MemoryRetrieval = {
+  modes: string[];
+};
+
+export type MemoryCapacity = {
+  max_records?: number;
+};
+
+export type MemoryRetention = {
+  ttl?: string;
+  on_expire?: string;
+};
+
+export type MemoryConstraints = {
+  append_only?: boolean;
+};
+
+export type MemorySpace = {
+  description?: string;
+  model: string;
+  scope: string[];
+  record_types: string[];
+  retrieval: MemoryRetrieval;
+  capacity?: MemoryCapacity;
+  retention?: MemoryRetention;
+  constraints?: MemoryConstraints;
+};
+
+export type MemoryOperationRef = {
+  space: string;
+  record_type: string;
+};
+
+export type MemoryOperationTarget = {
+  space: string;
+  record_type: string;
+};
+
+export type MemoryOperationTrigger = {
+  type: string;
+  space?: string;
+  threshold?: number;
+  every?: string;
+};
+
+export type MemoryOperation = {
+  type: string;
+  description?: string;
+  inputs?: MemoryOperationRef[];
+  output?: MemoryOperationRef;
+  targets?: MemoryOperationTarget[];
+  trigger?: MemoryOperationTrigger;
+  source_handling?: string;
+  preserve_provenance?: boolean;
+  cascade_derived_records?: boolean;
+};
+
+export type MemoryMetadata = {
+  scopes: Record<string, MemoryScope>;
+  record_types: Record<string, MemoryRecordType>;
+  spaces: Record<string, MemorySpace>;
+  operations?: Record<string, MemoryOperation>;
+};
+
+export type MemoryMeta = {
+  kind: 'memory';
+  name: string;
+  version: string;
+  description?: string;
+  memory: MemoryMetadata;
+};
+
+export type MemoryBuildSourceSchemaEntry = {
+  path: string;
+  sha256: string;
+};
+
+export type MemoryBuildMetadata = {
+  type: string;
+  format_version: number;
+  built_at?: string;
+  agentpm_version?: string;
+  manifest_path: string;
+  source_manifest_hash: string;
+  source_schemas?: MemoryBuildSourceSchemaEntry[];
+  source_schemas_hash: string;
+  source_contract_inputs_hash: string;
+  contracts_index_hash: string;
+  contracts_hash: string;
+  contract_count: number;
+};
+
+export type MemoryContractIndexEntry = {
+  space: string;
+  record_type: string;
+  schema_version: string;
+  model: string;
+  source_schema: string;
+  path: string;
+  sha256: string;
+};
+
+export type MemoryContractIndex = {
+  type: string;
+  format_version: number;
+  contracts: MemoryContractIndexEntry[];
+};
+
+export type MemoryContractSchema = Record<string, unknown>;
+
 type Runtime = {
   type: string;
   version: string;
@@ -186,6 +306,7 @@ type Manifest = ToolMeta & {
 type AgentManifest = AgentMeta;
 type SkillManifest = SkillMeta;
 type KnowledgeManifest = KnowledgeMeta;
+type MemoryManifest = MemoryMeta;
 
 export type LoadOptions = {
   withMeta?: boolean;
@@ -200,6 +321,7 @@ export type LoadAgentOptions = {
   skillDirOverride?: string;
   toolDirOverride?: string;
   knowledgeDirOverride?: string;
+  memoryDirOverride?: string;
   lockfileOverride?: string;
 };
 
@@ -211,6 +333,10 @@ export type LoadSkillOptions = {
 
 export type LoadKnowledgeOptions = {
   knowledgeDirOverride?: string;
+};
+
+export type LoadMemoryOptions = {
+  memoryDirOverride?: string;
 };
 
 type Loaded =
@@ -248,6 +374,16 @@ export type ResolvedAgentKnowledgeRef = {
   manifestPath: string | null;
 };
 
+export type ResolvedAgentMemoryRef = {
+  packageKey: string;
+  kind: 'memory';
+  name: string;
+  version: string;
+  integrity: string;
+  root: string | null;
+  manifestPath: string | null;
+};
+
 export type ReservedReferences = {
   knowledge: DependencyReference[];
   memory: DependencyReference[];
@@ -261,6 +397,7 @@ export type LoadedAgent = {
   resolvedTools: ResolvedAgentToolRef[];
   resolvedSkills: ResolvedAgentSkillRef[];
   resolvedKnowledge: ResolvedAgentKnowledgeRef[];
+  resolvedMemory: ResolvedAgentMemoryRef[];
   reserved: ReservedReferences;
 };
 
@@ -297,6 +434,33 @@ export type LoadedKnowledge = {
   provenancePath: string | null;
 };
 
+export type LoadedMemoryContractRef = {
+  space: string;
+  recordType: string;
+  schemaVersion: string;
+  model: string;
+  sourceSchemaPath: string;
+  path: string;
+  sha256: string;
+};
+
+export type LoadedMemory = {
+  kind: 'memory';
+  name: string;
+  version: string;
+  description?: string;
+  root: string;
+  manifestPath: string;
+  manifest: MemoryManifest;
+  memory: MemoryMetadata;
+  buildPath: string;
+  build: MemoryBuildMetadata;
+  contractIndexPath: string;
+  contractIndex: MemoryContractIndex;
+  sourceSchemaPaths: string[];
+  contracts: LoadedMemoryContractRef[];
+};
+
 type LockedPackage = {
   kind: string;
   name: string;
@@ -310,6 +474,7 @@ type LockedRoot = {
   tools?: string[];
   skills?: string[];
   knowledge?: string[];
+  memory?: string[];
   reserved?: Partial<ReservedReferences>;
 };
 
@@ -792,6 +957,58 @@ function resolveKnowledgeRoot(spec: string, knowledgeDirOverride?: string) {
   );
 }
 
+function resolveMemoryRoot(spec: string, memoryDirOverride?: string) {
+  const atIdx = spec.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === spec.length - 1) {
+    throw new Error(`Invalid memory spec "${spec}". Expected "@scope/name@version".`);
+  }
+  const rangeOrVersion = spec.slice(atIdx + 1).trim();
+  const name = spec.slice(0, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
+
+  const candidates = [
+    memoryDirOverride,
+    process.env.AGENTPM_MEMORY_DIR,
+    resolve(projectRoot, '.agentpm/memory'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/memory') : undefined,
+  ].filter(Boolean) as string[];
+
+  if (semver.valid(rangeOrVersion)) {
+    for (const base of candidates) {
+      const hit = findInstalled(base, name, rangeOrVersion);
+      if (hit) return { ...hit, packageName: name };
+    }
+    throw new Error(`Memory package "${spec}" not found in .agentpm/memory (or overrides).`);
+  }
+
+  const isLatest = rangeOrVersion.toLowerCase() === 'latest';
+  const isRange = semver.validRange(rangeOrVersion) !== null;
+  if (!isLatest && !isRange) {
+    throw new Error(
+      `Invalid version/range "${rangeOrVersion}". Use exact (e.g. 0.1.2), a semver range (e.g. ^0.1), or "latest".`,
+    );
+  }
+
+  for (const base of candidates) {
+    const installed = listInstalledVersions(base, name);
+    if (installed.length === 0) continue;
+
+    const picked = isLatest
+      ? semver.rsort(installed)[0]!
+      : semver.maxSatisfying(installed, rangeOrVersion, { includePrerelease: false });
+
+    if (!picked) continue;
+
+    const hit = findInstalled(base, name, picked);
+    if (hit) return { ...hit, packageName: name };
+  }
+
+  const searched = candidates.join(', ');
+  throw new Error(
+    `No installed version of "${name}" matches "${rangeOrVersion}". Searched: ${searched}`,
+  );
+}
+
 function readManifest(path: string): Manifest {
   const raw = readFileSync(path, 'utf-8');
   const m = JSON.parse(raw);
@@ -830,6 +1047,18 @@ function readKnowledgeManifest(path: string): KnowledgeManifest {
   }
   if (!manifest.knowledge?.mode) {
     throw new Error(`agent.json missing knowledge.mode at: ${path}`);
+  }
+  return manifest;
+}
+
+function readMemoryManifest(path: string): MemoryManifest {
+  const raw = readFileSync(path, 'utf-8');
+  const manifest = JSON.parse(raw) as MemoryManifest;
+  if (manifest?.kind !== 'memory') {
+    throw new Error(`agent.json is not a memory manifest at: ${path}`);
+  }
+  if (!manifest.memory || typeof manifest.memory !== 'object' || Array.isArray(manifest.memory)) {
+    throw new Error(`agent.json missing memory object at: ${path}`);
   }
   return manifest;
 }
@@ -911,6 +1140,251 @@ function resolveKnowledgeInstalledPath(
     if (hit) return hit;
   }
   return null;
+}
+
+function resolveMemoryInstalledPath(
+  name: string,
+  version: string,
+  memoryDirOverride?: string,
+): { root: string; manifestPath: string } | null {
+  const projectRoot = findProjectRoot(process.cwd());
+  const candidates = [
+    memoryDirOverride,
+    process.env.AGENTPM_MEMORY_DIR,
+    resolve(projectRoot, '.agentpm/memory'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/memory') : undefined,
+  ].filter(Boolean) as string[];
+
+  for (const base of candidates) {
+    const hit = findInstalled(base, name, version);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function isSafeRelativePath(value: string): boolean {
+  if (!value || path.isAbsolute(value)) return false;
+  const normalized = path.posix.normalize(value.replace(/\\/g, '/'));
+  if (normalized === '.' || normalized.startsWith('../') || normalized.includes('/../')) {
+    return false;
+  }
+  return !normalized.split('/').includes('..');
+}
+
+function ensureInsideRoot(rootRealPath: string, targetRealPath: string, fieldLabel: string): void {
+  const relative = path.relative(rootRealPath, targetRealPath);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw new Error(`${fieldLabel} resolves outside the installed memory package root.`);
+  }
+}
+
+function resolveInstalledMemoryFile(
+  root: string,
+  relativePath: string,
+  fieldLabel: string,
+  requiredPrefix?: string,
+): string {
+  if (!isSafeRelativePath(relativePath)) {
+    throw new Error(`${fieldLabel} must be a safe package-relative path.`);
+  }
+
+  const normalized = path.posix.normalize(relativePath.replace(/\\/g, '/'));
+  if (requiredPrefix && !normalized.startsWith(requiredPrefix)) {
+    throw new Error(`${fieldLabel} must remain under ${requiredPrefix}.`);
+  }
+
+  const rootRealPath = fs.realpathSync(root);
+  const resolvedPath = resolve(root, normalized);
+  if (!existsSync(resolvedPath) || !statSync(resolvedPath).isFile()) {
+    throw new Error(`${fieldLabel} is missing at ${normalized}.`);
+  }
+
+  const targetRealPath = fs.realpathSync(resolvedPath);
+  ensureInsideRoot(rootRealPath, targetRealPath, fieldLabel);
+  return targetRealPath;
+}
+
+function readJsonFile(pathname: string, fieldLabel: string): JsonValue {
+  try {
+    return JSON.parse(readFileSync(pathname, 'utf-8')) as JsonValue;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`${fieldLabel} is not valid JSON: ${detail}`);
+  }
+}
+
+function requireObjectRecord(value: JsonValue, fieldLabel: string): Record<string, JsonValue> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    throw new Error(`${fieldLabel} must be a JSON object.`);
+  }
+  return value as Record<string, JsonValue>;
+}
+
+function readMemoryBuildMetadata(root: string): { path: string; build: MemoryBuildMetadata } {
+  const buildPath = resolveInstalledMemoryFile(root, 'memory/build.json', 'memory/build.json');
+  const buildJson = requireObjectRecord(
+    readJsonFile(buildPath, 'memory/build.json'),
+    'memory/build.json',
+  );
+
+  if (buildJson.type !== 'agentpm-memory-contracts') {
+    throw new Error('memory/build.json has unsupported type.');
+  }
+  if (buildJson.format_version !== 1) {
+    throw new Error('memory/build.json has unsupported format_version.');
+  }
+  if (typeof buildJson.manifest_path !== 'string' || buildJson.manifest_path.length === 0) {
+    throw new Error('memory/build.json missing manifest_path.');
+  }
+  for (const field of [
+    'source_manifest_hash',
+    'source_schemas_hash',
+    'source_contract_inputs_hash',
+    'contracts_index_hash',
+    'contracts_hash',
+  ] as const) {
+    if (typeof buildJson[field] !== 'string' || buildJson[field].length === 0) {
+      throw new Error(`memory/build.json missing ${field}.`);
+    }
+  }
+  if (typeof buildJson.contract_count !== 'number' || !Number.isInteger(buildJson.contract_count)) {
+    throw new Error('memory/build.json missing contract_count.');
+  }
+  if (
+    buildJson.source_schemas !== undefined &&
+    (!Array.isArray(buildJson.source_schemas) ||
+      buildJson.source_schemas.some(
+        (entry) =>
+          !entry ||
+          typeof entry !== 'object' ||
+          Array.isArray(entry) ||
+          typeof (entry as Record<string, unknown>).path !== 'string' ||
+          typeof (entry as Record<string, unknown>).sha256 !== 'string',
+      ))
+  ) {
+    throw new Error('memory/build.json has invalid source_schemas entries.');
+  }
+
+  return { path: buildPath, build: buildJson as unknown as MemoryBuildMetadata };
+}
+
+function readMemoryContractIndex(
+  root: string,
+  memory: MemoryMetadata,
+  expectedContractCount: number,
+): {
+  path: string;
+  index: MemoryContractIndex;
+  sourceSchemaPaths: string[];
+  contracts: LoadedMemoryContractRef[];
+} {
+  const indexPath = resolveInstalledMemoryFile(
+    root,
+    'memory/contracts/index.json',
+    'memory/contracts/index.json',
+    'memory/contracts/',
+  );
+  const indexJson = requireObjectRecord(
+    readJsonFile(indexPath, 'memory/contracts/index.json'),
+    'memory/contracts/index.json',
+  );
+
+  if (indexJson.type !== 'agentpm-memory-contract-index') {
+    throw new Error('memory/contracts/index.json has unsupported type.');
+  }
+  if (indexJson.format_version !== 1) {
+    throw new Error('memory/contracts/index.json has unsupported format_version.');
+  }
+  if (!Array.isArray(indexJson.contracts)) {
+    throw new Error('memory/contracts/index.json missing contracts array.');
+  }
+  if (indexJson.contracts.length !== expectedContractCount) {
+    throw new Error('memory/build.json contract_count does not match memory/contracts/index.json.');
+  }
+
+  const sourceSchemaPaths = new Set<string>();
+  const seenIdentities = new Set<string>();
+  const seenPaths = new Set<string>();
+  const contracts: LoadedMemoryContractRef[] = [];
+
+  for (const [index, entry] of indexJson.contracts.entries()) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+      throw new Error(`memory/contracts/index.json contract entry ${index} must be an object.`);
+    }
+    const record = entry as Record<string, unknown>;
+    const space = record.space;
+    const recordType = record.record_type;
+    const schemaVersion = record.schema_version;
+    const model = record.model;
+    const sourceSchema = record.source_schema;
+    const contractPath = record.path;
+    const sha256 = record.sha256;
+
+    if (
+      typeof space !== 'string' ||
+      typeof recordType !== 'string' ||
+      typeof schemaVersion !== 'string' ||
+      typeof model !== 'string' ||
+      typeof sourceSchema !== 'string' ||
+      typeof contractPath !== 'string' ||
+      typeof sha256 !== 'string'
+    ) {
+      throw new Error(
+        `memory/contracts/index.json contract entry ${index} is missing required fields.`,
+      );
+    }
+
+    const declaredRecordType = memory.record_types[recordType];
+    if (!declaredRecordType || declaredRecordType.schema !== sourceSchema) {
+      throw new Error(
+        `memory/contracts/index.json references undeclared source schema "${sourceSchema}".`,
+      );
+    }
+
+    const identity = `${space}:${recordType}`;
+    if (seenIdentities.has(identity)) {
+      throw new Error(
+        `memory/contracts/index.json contains duplicate contract entry "${identity}".`,
+      );
+    }
+    seenIdentities.add(identity);
+    if (seenPaths.has(contractPath)) {
+      throw new Error(
+        `memory/contracts/index.json contains duplicate contract path "${contractPath}".`,
+      );
+    }
+    seenPaths.add(contractPath);
+
+    const resolvedContractPath = resolveInstalledMemoryFile(
+      root,
+      contractPath,
+      `memory/contracts/index.json contract path "${contractPath}"`,
+      'memory/contracts/',
+    );
+    const resolvedSourceSchemaPath = resolveInstalledMemoryFile(
+      root,
+      sourceSchema,
+      `memory/contracts/index.json source schema "${sourceSchema}"`,
+    );
+    sourceSchemaPaths.add(resolvedSourceSchemaPath);
+
+    contracts.push({
+      space,
+      recordType,
+      schemaVersion,
+      model,
+      sourceSchemaPath: resolvedSourceSchemaPath,
+      path: resolvedContractPath,
+      sha256,
+    });
+  }
+
+  return {
+    path: indexPath,
+    index: indexJson as unknown as MemoryContractIndex,
+    sourceSchemaPaths: [...sourceSchemaPaths].sort(),
+    contracts,
+  };
 }
 
 function buildEnv(
@@ -1246,9 +1720,19 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
         if (knowledgeErr instanceof Error && knowledgeErr.message.includes('loadKnowledge(')) {
           throw knowledgeErr;
         }
+        try {
+          resolveMemoryRoot(spec);
+          throw new Error(
+            `Package "${spec}" is Memory. load() is tool-only; use loadMemory("${spec}") instead.`,
+          );
+        } catch (memoryErr) {
+          if (memoryErr instanceof Error && memoryErr.message.includes('loadMemory(')) {
+            throw memoryErr;
+          }
+        }
         if (err instanceof Error && err.message.includes('not found in .agentpm/tools')) {
           throw new Error(
-            `${err.message} If this package is a Skill, use loadSkill("${spec}") instead. If it is Knowledge, use loadKnowledge("${spec}") instead.`,
+            `${err.message} If this package is a Skill, use loadSkill("${spec}") instead. If it is Knowledge, use loadKnowledge("${spec}") instead. If it is Memory, use loadMemory("${spec}") instead.`,
           );
         }
         throw err;
@@ -1414,6 +1898,24 @@ export async function loadAgent(
     },
   );
 
+  const resolvedMemory: ResolvedAgentMemoryRef[] = (rootEntry.memory ?? []).flatMap((memoryKey) => {
+    const pkg = lock.packages?.[memoryKey];
+    if (!pkg || pkg.kind !== 'memory') return [];
+
+    const installed = resolveMemoryInstalledPath(pkg.name, pkg.version, options.memoryDirOverride);
+    return [
+      {
+        packageKey: memoryKey,
+        kind: 'memory',
+        name: pkg.name,
+        version: pkg.version,
+        integrity: pkg.integrity,
+        root: installed?.root ?? null,
+        manifestPath: installed?.manifestPath ?? null,
+      },
+    ];
+  });
+
   return {
     root,
     manifestPath,
@@ -1421,6 +1923,7 @@ export async function loadAgent(
     resolvedTools,
     resolvedSkills,
     resolvedKnowledge,
+    resolvedMemory,
     reserved,
   };
 }
@@ -1613,4 +2116,55 @@ export async function loadKnowledge(
     indexPaths,
     provenancePath,
   };
+}
+
+export async function loadMemory(
+  spec: string,
+  options: LoadMemoryOptions = {},
+): Promise<LoadedMemory> {
+  const { root, manifestPath } = resolveMemoryRoot(spec, options.memoryDirOverride);
+  const manifest = readMemoryManifest(manifestPath);
+  const { path: buildPath, build } = readMemoryBuildMetadata(root);
+  const {
+    path: contractIndexPath,
+    index: contractIndex,
+    sourceSchemaPaths,
+    contracts,
+  } = readMemoryContractIndex(root, manifest.memory, build.contract_count);
+
+  return {
+    kind: 'memory',
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    root,
+    manifestPath,
+    manifest,
+    memory: manifest.memory,
+    buildPath,
+    build,
+    contractIndexPath,
+    contractIndex,
+    sourceSchemaPaths,
+    contracts,
+  };
+}
+
+export function loadMemoryContract(
+  memoryPackage: LoadedMemory,
+  selector: { space: string; recordType: string },
+): MemoryContractSchema {
+  const contract = memoryPackage.contracts.find(
+    (entry) => entry.space === selector.space && entry.recordType === selector.recordType,
+  );
+  if (!contract) {
+    throw new Error(
+      `Resolved memory contract "${selector.space}:${selector.recordType}" was not found in memory/contracts/index.json.`,
+    );
+  }
+
+  return requireObjectRecord(
+    readJsonFile(contract.path, `memory contract "${selector.space}:${selector.recordType}"`),
+    `memory contract "${selector.space}:${selector.recordType}"`,
+  ) as MemoryContractSchema;
 }

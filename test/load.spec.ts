@@ -114,6 +114,7 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   const withEnvSpec = '@zack/with-env@0.1.0';
   const skillSpec = '@zack/triage-playbook@0.1.0';
   const knowledgeSpec = '@zack/python-docs@0.1.0';
+  const memorySpec = '@zack/conversation-memory@0.1.0';
 
   beforeAll(() => {
     makeToolPackage(tmp, okSpec);
@@ -169,11 +170,125 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
       'utf8',
     );
     process.env.AGENTPM_KNOWLEDGE_DIR = knowledgeDir;
+
+    const memoryAtIdx = memorySpec.lastIndexOf('@');
+    const memoryName = memorySpec.slice(0, memoryAtIdx);
+    const memoryVersion = memorySpec.slice(memoryAtIdx + 1);
+    const memoryRoot = join(tmp, 'memory', `${memoryName}/${memoryVersion}`);
+    mkdirSync(join(memoryRoot, 'schemas'), { recursive: true });
+    mkdirSync(join(memoryRoot, 'memory', 'contracts'), { recursive: true });
+    writeFileSync(
+      join(memoryRoot, 'agent.json'),
+      JSON.stringify(
+        {
+          kind: 'memory',
+          name: 'conversation-memory',
+          version: memoryVersion,
+          description: 'Memory fixture',
+          memory: {
+            scopes: { user: { description: 'User scope' } },
+            record_types: {
+              user_preference: {
+                schema: 'schemas/user-preference.schema.json',
+                version: '1.0.0',
+              },
+            },
+            spaces: {
+              profile: {
+                model: 'document',
+                scope: ['user'],
+                record_types: ['user_preference'],
+                retrieval: { modes: ['key'] },
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    writeFileSync(
+      join(memoryRoot, 'schemas', 'user-preference.schema.json'),
+      JSON.stringify(
+        {
+          $schema: 'https://json-schema.org/draft/2020-12/schema',
+          type: 'object',
+          properties: {
+            display_name: { type: 'string' },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    writeFileSync(
+      join(memoryRoot, 'memory', 'build.json'),
+      JSON.stringify(
+        {
+          type: 'agentpm-memory-contracts',
+          format_version: 1,
+          built_at: '2026-07-20T00:00:00Z',
+          agentpm_version: '0.1.0',
+          manifest_path: 'agent.json',
+          source_manifest_hash: 'sha256:manifest',
+          source_schemas_hash: 'sha256:schemas',
+          source_contract_inputs_hash: 'sha256:inputs',
+          contracts_index_hash: 'sha256:index',
+          contracts_hash: 'sha256:contracts',
+          contract_count: 1,
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    writeFileSync(
+      join(memoryRoot, 'memory', 'contracts', 'index.json'),
+      JSON.stringify(
+        {
+          type: 'agentpm-memory-contract-index',
+          format_version: 1,
+          contracts: [
+            {
+              space: 'profile',
+              record_type: 'user_preference',
+              schema_version: '1.0.0',
+              model: 'document',
+              source_schema: 'schemas/user-preference.schema.json',
+              path: 'memory/contracts/profile.user_preference.schema.json',
+              sha256: 'sha256:contract',
+            },
+          ],
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    writeFileSync(
+      join(memoryRoot, 'memory', 'contracts', 'profile.user_preference.schema.json'),
+      JSON.stringify(
+        {
+          type: 'object',
+          properties: {
+            id: { type: 'string' },
+            content: { type: 'object' },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    process.env.AGENTPM_MEMORY_DIR = join(tmp, 'memory');
   });
 
   afterAll(() => {
     delete process.env.AGENTPM_SKILL_DIR;
     delete process.env.AGENTPM_KNOWLEDGE_DIR;
+    delete process.env.AGENTPM_MEMORY_DIR;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -258,6 +373,16 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
 
   it('rejects installed skill specs with guidance to use loadSkill', async () => {
     await expect(load(skillSpec, { toolDirOverride: tmp })).rejects.toThrow(/use loadSkill/i);
+  });
+
+  it('rejects installed knowledge specs with guidance to use loadKnowledge', async () => {
+    await expect(load(knowledgeSpec, { toolDirOverride: tmp })).rejects.toThrow(
+      /use loadKnowledge/i,
+    );
+  });
+
+  it('rejects installed memory specs with guidance to use loadMemory', async () => {
+    await expect(load(memorySpec, { toolDirOverride: tmp })).rejects.toThrow(/use loadMemory/i);
   });
 
   it('rejects uninstalled skill-like specs with guidance to use loadSkill', async () => {
