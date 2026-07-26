@@ -181,6 +181,8 @@ console.log(profileContract);
 - parsed `memory/contracts/index.json`
 - absolute paths for declared source schemas and indexed resolved contracts
 
+It is a metadata and contract loader only. It does not provide live record CRUD, retention enforcement, trigger execution, or a hosted memory runtime.
+
 `loadMemoryContract()` loads one indexed resolved contract on demand by `space` + `recordType`.
 
 ### `load()` stays tool-only
