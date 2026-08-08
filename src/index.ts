@@ -240,6 +240,68 @@ export type MemoryMeta = {
   memory: MemoryMetadata;
 };
 
+export type ProfileIdentity = {
+  role: string;
+  description?: string;
+  expertise?: string[];
+};
+
+export type ProfileAudience = {
+  description?: string;
+  assumed_knowledge?: string;
+  adaptation?: string[];
+};
+
+export type ProfileVocabulary = {
+  prefer?: string[];
+  avoid?: string[];
+};
+
+export type ProfileCommunication = {
+  tone: string[];
+  verbosity: 'concise' | 'balanced' | 'detailed';
+  guidelines?: string[];
+  formatting?: string[];
+  vocabulary?: ProfileVocabulary;
+};
+
+export type ProfileConstraint = {
+  id: string;
+  strength: 'required' | 'preferred';
+  instruction: string;
+};
+
+export type ProfileCapabilityHints = {
+  tool_use?: boolean;
+  structured_output?: boolean;
+  multimodal_input?: boolean;
+};
+
+export type ProfileCompatibility = {
+  minimum_context_tokens?: number;
+  requires?: ProfileCapabilityHints;
+  recommends?: ProfileCapabilityHints;
+};
+
+export type ProfileMetadata = {
+  identity: ProfileIdentity;
+  objectives: string[];
+  principles?: string[];
+  audience?: ProfileAudience;
+  communication: ProfileCommunication;
+  boundaries?: string[];
+  constraints?: ProfileConstraint[];
+  compatibility?: ProfileCompatibility;
+};
+
+export type ProfileMeta = {
+  kind: 'profile';
+  name: string;
+  version: string;
+  description?: string;
+  profile: ProfileMetadata;
+};
+
 export type MemoryBuildSourceSchemaEntry = {
   path: string;
   sha256: string;
@@ -307,6 +369,7 @@ type AgentManifest = AgentMeta;
 type SkillManifest = SkillMeta;
 type KnowledgeManifest = KnowledgeMeta;
 type MemoryManifest = MemoryMeta;
+type ProfileManifest = ProfileMeta;
 
 export type LoadOptions = {
   withMeta?: boolean;
@@ -322,6 +385,7 @@ export type LoadAgentOptions = {
   toolDirOverride?: string;
   knowledgeDirOverride?: string;
   memoryDirOverride?: string;
+  profileDirOverride?: string;
   lockfileOverride?: string;
 };
 
@@ -337,6 +401,10 @@ export type LoadKnowledgeOptions = {
 
 export type LoadMemoryOptions = {
   memoryDirOverride?: string;
+};
+
+export type LoadProfileOptions = {
+  profileDirOverride?: string;
 };
 
 type Loaded =
@@ -384,6 +452,16 @@ export type ResolvedAgentMemoryRef = {
   manifestPath: string | null;
 };
 
+export type ResolvedAgentProfileRef = {
+  packageKey: string;
+  kind: 'profile';
+  name: string;
+  version: string;
+  integrity: string;
+  root: string | null;
+  manifestPath: string | null;
+};
+
 export type ReservedReferences = {
   knowledge: DependencyReference[];
   memory: DependencyReference[];
@@ -398,6 +476,7 @@ export type LoadedAgent = {
   resolvedSkills: ResolvedAgentSkillRef[];
   resolvedKnowledge: ResolvedAgentKnowledgeRef[];
   resolvedMemory: ResolvedAgentMemoryRef[];
+  resolvedProfiles: ResolvedAgentProfileRef[];
   reserved: ReservedReferences;
 };
 
@@ -461,6 +540,17 @@ export type LoadedMemory = {
   contracts: LoadedMemoryContractRef[];
 };
 
+export type LoadedProfile = {
+  kind: 'profile';
+  name: string;
+  version: string;
+  description?: string;
+  root: string;
+  manifestPath: string;
+  manifest: ProfileManifest;
+  profile: ProfileMetadata;
+};
+
 type LockedPackage = {
   kind: string;
   name: string;
@@ -475,6 +565,7 @@ type LockedRoot = {
   skills?: string[];
   knowledge?: string[];
   memory?: string[];
+  profiles?: string[];
   reserved?: Partial<ReservedReferences>;
 };
 
@@ -1009,6 +1100,58 @@ function resolveMemoryRoot(spec: string, memoryDirOverride?: string) {
   );
 }
 
+function resolveProfileRoot(spec: string, profileDirOverride?: string) {
+  const atIdx = spec.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === spec.length - 1) {
+    throw new Error(`Invalid profile spec "${spec}". Expected "@scope/name@version".`);
+  }
+  const rangeOrVersion = spec.slice(atIdx + 1).trim();
+  const name = spec.slice(0, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
+
+  const candidates = [
+    profileDirOverride,
+    process.env.AGENTPM_PROFILE_DIR,
+    resolve(projectRoot, '.agentpm/profiles'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/profiles') : undefined,
+  ].filter(Boolean) as string[];
+
+  if (semver.valid(rangeOrVersion)) {
+    for (const base of candidates) {
+      const hit = findInstalled(base, name, rangeOrVersion);
+      if (hit) return { ...hit, packageName: name };
+    }
+    throw new Error(`Profile package "${spec}" not found in .agentpm/profiles (or overrides).`);
+  }
+
+  const isLatest = rangeOrVersion.toLowerCase() === 'latest';
+  const isRange = semver.validRange(rangeOrVersion) !== null;
+  if (!isLatest && !isRange) {
+    throw new Error(
+      `Invalid version/range "${rangeOrVersion}". Use exact (e.g. 0.1.2), a semver range (e.g. ^0.1), or "latest".`,
+    );
+  }
+
+  for (const base of candidates) {
+    const installed = listInstalledVersions(base, name);
+    if (installed.length === 0) continue;
+
+    const picked = isLatest
+      ? semver.rsort(installed)[0]!
+      : semver.maxSatisfying(installed, rangeOrVersion, { includePrerelease: false });
+
+    if (!picked) continue;
+
+    const hit = findInstalled(base, name, picked);
+    if (hit) return { ...hit, packageName: name };
+  }
+
+  const searched = candidates.join(', ');
+  throw new Error(
+    `No installed version of "${name}" matches "${rangeOrVersion}". Searched: ${searched}`,
+  );
+}
+
 function readManifest(path: string): Manifest {
   const raw = readFileSync(path, 'utf-8');
   const m = JSON.parse(raw);
@@ -1059,6 +1202,22 @@ function readMemoryManifest(path: string): MemoryManifest {
   }
   if (!manifest.memory || typeof manifest.memory !== 'object' || Array.isArray(manifest.memory)) {
     throw new Error(`agent.json missing memory object at: ${path}`);
+  }
+  return manifest;
+}
+
+function readProfileManifest(path: string): ProfileManifest {
+  const raw = readFileSync(path, 'utf-8');
+  const manifest = JSON.parse(raw) as ProfileManifest;
+  if (manifest?.kind !== 'profile') {
+    throw new Error(`agent.json is not a profile manifest at: ${path}`);
+  }
+  if (
+    !manifest.profile ||
+    typeof manifest.profile !== 'object' ||
+    Array.isArray(manifest.profile)
+  ) {
+    throw new Error(`agent.json missing profile object at: ${path}`);
   }
   return manifest;
 }
@@ -1153,6 +1312,26 @@ function resolveMemoryInstalledPath(
     process.env.AGENTPM_MEMORY_DIR,
     resolve(projectRoot, '.agentpm/memory'),
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/memory') : undefined,
+  ].filter(Boolean) as string[];
+
+  for (const base of candidates) {
+    const hit = findInstalled(base, name, version);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function resolveProfileInstalledPath(
+  name: string,
+  version: string,
+  profileDirOverride?: string,
+): { root: string; manifestPath: string } | null {
+  const projectRoot = findProjectRoot(process.cwd());
+  const candidates = [
+    profileDirOverride,
+    process.env.AGENTPM_PROFILE_DIR,
+    resolve(projectRoot, '.agentpm/profiles'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/profiles') : undefined,
   ].filter(Boolean) as string[];
 
   for (const base of candidates) {
@@ -1730,9 +1909,19 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
             throw memoryErr;
           }
         }
+        try {
+          resolveProfileRoot(spec);
+          throw new Error(
+            `Package "${spec}" is a Profile. load() is tool-only; use loadProfile("${spec}") instead.`,
+          );
+        } catch (profileErr) {
+          if (profileErr instanceof Error && profileErr.message.includes('loadProfile(')) {
+            throw profileErr;
+          }
+        }
         if (err instanceof Error && err.message.includes('not found in .agentpm/tools')) {
           throw new Error(
-            `${err.message} If this package is a Skill, use loadSkill("${spec}") instead. If it is Knowledge, use loadKnowledge("${spec}") instead. If it is Memory, use loadMemory("${spec}") instead.`,
+            `${err.message} If this package is a Skill, use loadSkill("${spec}") instead. If it is Knowledge, use loadKnowledge("${spec}") instead. If it is Memory, use loadMemory("${spec}") instead. If it is a Profile, use loadProfile("${spec}") instead.`,
           );
         }
         throw err;
@@ -1916,6 +2105,30 @@ export async function loadAgent(
     ];
   });
 
+  const resolvedProfiles: ResolvedAgentProfileRef[] = (rootEntry.profiles ?? []).flatMap(
+    (profileKey) => {
+      const pkg = lock.packages?.[profileKey];
+      if (!pkg || pkg.kind !== 'profile') return [];
+
+      const installed = resolveProfileInstalledPath(
+        pkg.name,
+        pkg.version,
+        options.profileDirOverride,
+      );
+      return [
+        {
+          packageKey: profileKey,
+          kind: 'profile' as const,
+          name: pkg.name,
+          version: pkg.version,
+          integrity: pkg.integrity,
+          root: installed?.root ?? null,
+          manifestPath: installed?.manifestPath ?? null,
+        },
+      ];
+    },
+  );
+
   return {
     root,
     manifestPath,
@@ -1924,6 +2137,7 @@ export async function loadAgent(
     resolvedSkills,
     resolvedKnowledge,
     resolvedMemory,
+    resolvedProfiles,
     reserved,
   };
 }
@@ -2147,6 +2361,25 @@ export async function loadMemory(
     contractIndex,
     sourceSchemaPaths,
     contracts,
+  };
+}
+
+export async function loadProfile(
+  spec: string,
+  options: LoadProfileOptions = {},
+): Promise<LoadedProfile> {
+  const { root, manifestPath } = resolveProfileRoot(spec, options.profileDirOverride);
+  const manifest = readProfileManifest(manifestPath);
+
+  return {
+    kind: 'profile',
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    root,
+    manifestPath,
+    manifest,
+    profile: manifest.profile,
   };
 }
 

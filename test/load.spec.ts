@@ -115,6 +115,7 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   const skillSpec = '@zack/triage-playbook@0.1.0';
   const knowledgeSpec = '@zack/python-docs@0.1.0';
   const memorySpec = '@zack/conversation-memory@0.1.0';
+  const profileSpec = '@zack/support-style@0.1.0';
 
   beforeAll(() => {
     makeToolPackage(tmp, okSpec);
@@ -283,12 +284,42 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
       'utf8',
     );
     process.env.AGENTPM_MEMORY_DIR = join(tmp, 'memory');
+
+    const profileAtIdx = profileSpec.lastIndexOf('@');
+    const profileName = profileSpec.slice(0, profileAtIdx);
+    const profileVersion = profileSpec.slice(profileAtIdx + 1);
+    const profileRoot = join(tmp, 'profiles', `${profileName}/${profileVersion}`);
+    mkdirSync(profileRoot, { recursive: true });
+    writeFileSync(
+      join(profileRoot, 'agent.json'),
+      JSON.stringify(
+        {
+          kind: 'profile',
+          name: 'support-style',
+          version: profileVersion,
+          description: 'Profile fixture',
+          profile: {
+            identity: { role: 'Support agent' },
+            objectives: ['Help users move forward'],
+            communication: {
+              tone: ['calm'],
+              verbosity: 'balanced',
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    process.env.AGENTPM_PROFILE_DIR = join(tmp, 'profiles');
   });
 
   afterAll(() => {
     delete process.env.AGENTPM_SKILL_DIR;
     delete process.env.AGENTPM_KNOWLEDGE_DIR;
     delete process.env.AGENTPM_MEMORY_DIR;
+    delete process.env.AGENTPM_PROFILE_DIR;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -383,6 +414,10 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
 
   it('rejects installed memory specs with guidance to use loadMemory', async () => {
     await expect(load(memorySpec, { toolDirOverride: tmp })).rejects.toThrow(/use loadMemory/i);
+  });
+
+  it('rejects installed profile specs with guidance to use loadProfile', async () => {
+    await expect(load(profileSpec, { toolDirOverride: tmp })).rejects.toThrow(/use loadProfile/i);
   });
 
   it('rejects uninstalled skill-like specs with guidance to use loadSkill', async () => {

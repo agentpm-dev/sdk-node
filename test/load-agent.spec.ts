@@ -224,6 +224,37 @@ function makeInstalledMemory(baseDir: string, spec: string) {
   );
 }
 
+function makeInstalledProfile(baseDir: string, spec: string, profile?: Record<string, unknown>) {
+  const atIdx = spec.lastIndexOf('@');
+  const packageName = spec.slice(0, atIdx);
+  const version = spec.slice(atIdx + 1);
+  const root = join(baseDir, `${packageName}/${version}`);
+  const manifestName = packageName.slice(packageName.indexOf('/') + 1);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, 'agent.json'),
+    JSON.stringify(
+      {
+        kind: 'profile',
+        name: manifestName,
+        version,
+        description: 'Installed profile fixture',
+        profile: profile ?? {
+          identity: { role: 'Support agent' },
+          objectives: ['Help users move forward'],
+          communication: {
+            tone: ['calm'],
+            verbosity: 'balanced',
+          },
+        },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
 describe('agentpm node sdk - loadAgent', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-agent-test-'));
   const toolsDir = join(tmp, '.agentpm', 'tools');
@@ -231,6 +262,7 @@ describe('agentpm node sdk - loadAgent', () => {
   const skillsDir = join(tmp, '.agentpm', 'skills');
   const knowledgeDir = join(tmp, '.agentpm', 'knowledge');
   const memoryDir = join(tmp, '.agentpm', 'memory');
+  const profileDir = join(tmp, '.agentpm', 'profiles');
   const lockfilePath = join(tmp, 'agent.lock');
   const agentSpec = '@zack/support-agent@0.1.0';
   const newerAgentSpec = '@zack/support-agent@0.2.0';
@@ -242,6 +274,19 @@ describe('agentpm node sdk - loadAgent', () => {
     makeInstalledKnowledge(knowledgeDir, '@zack/python-docs@0.1.0', 'vector');
     makeInstalledKnowledge(knowledgeDir, '@zack/support-playbook@0.1.0', 'context');
     makeInstalledMemory(memoryDir, '@zack/profile-memory@0.1.0');
+    makeInstalledProfile(profileDir, '@zack/support-style@0.1.0');
+    makeInstalledProfile(profileDir, '@zack/escalation-style@0.2.0', {
+      identity: {
+        role: 'Escalation reviewer',
+        expertise: ['Tier-two support'],
+      },
+      objectives: ['Keep escalations concise', 'Preserve accountability'],
+      communication: {
+        tone: ['direct', 'calm'],
+        verbosity: 'concise',
+        guidelines: ['State the decision first'],
+      },
+    });
     makeInstalledAgent(agentsDir, agentSpec, '@zack/triage-skill@0.1.0');
     makeInstalledAgent(agentsDir, newerAgentSpec, '@zack/triage-skill@0.2.0');
     writeFileSync(
@@ -299,6 +344,18 @@ describe('agentpm node sdk - loadAgent', () => {
               version: '0.1.0',
               integrity: 'sha256-memory',
             },
+            'profile:@zack/support-style@0.1.0': {
+              kind: 'profile',
+              name: '@zack/support-style',
+              version: '0.1.0',
+              integrity: 'sha256-profile',
+            },
+            'profile:@zack/escalation-style@0.2.0': {
+              kind: 'profile',
+              name: '@zack/escalation-style',
+              version: '0.2.0',
+              integrity: 'sha256-profile-2',
+            },
           },
           roots: {
             'agent:@zack/support-agent@0.1.0': {
@@ -306,6 +363,7 @@ describe('agentpm node sdk - loadAgent', () => {
               skills: ['skill:@zack/triage-skill@0.1.0'],
               knowledge: ['knowledge:@zack/python-docs@0.1.0'],
               memory: ['memory:@zack/profile-memory@0.1.0'],
+              profiles: ['profile:@zack/support-style@0.1.0'],
               reserved: {
                 knowledge: [],
                 memory: [],
@@ -316,6 +374,10 @@ describe('agentpm node sdk - loadAgent', () => {
               tools: ['tool:@zack/capitalize@0.1.0'],
               skills: ['skill:@zack/triage-skill@0.2.0'],
               knowledge: ['knowledge:@zack/support-playbook@0.1.0'],
+              profiles: [
+                'profile:@zack/support-style@0.1.0',
+                'profile:@zack/escalation-style@0.2.0',
+              ],
               reserved: {
                 knowledge: [],
                 memory: [],
@@ -342,6 +404,7 @@ describe('agentpm node sdk - loadAgent', () => {
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
       memoryDirOverride: memoryDir,
+      profileDirOverride: profileDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -393,6 +456,17 @@ describe('agentpm node sdk - loadAgent', () => {
         manifestPath: expect.stringContaining('.agentpm/memory'),
       },
     ]);
+    expect(loaded.resolvedProfiles).toEqual([
+      {
+        packageKey: 'profile:@zack/support-style@0.1.0',
+        kind: 'profile',
+        name: '@zack/support-style',
+        version: '0.1.0',
+        integrity: 'sha256-profile',
+        root: expect.stringContaining('.agentpm/profiles'),
+        manifestPath: expect.stringContaining('.agentpm/profiles'),
+      },
+    ]);
   });
 
   it('ignores legacy reserved.skills entries from older lockfile shapes', async () => {
@@ -441,6 +515,7 @@ describe('agentpm node sdk - loadAgent', () => {
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
       memoryDirOverride: memoryDir,
+      profileDirOverride: profileDir,
       lockfileOverride: legacyLockfilePath,
     });
 
@@ -453,6 +528,7 @@ describe('agentpm node sdk - loadAgent', () => {
     expect(loaded.resolvedSkills).toEqual([]);
     expect(loaded.resolvedKnowledge).toEqual([]);
     expect(loaded.resolvedMemory).toEqual([]);
+    expect(loaded.resolvedProfiles).toEqual([]);
   });
 
   it('resolves latest agent versions from the installed agents layout', async () => {
@@ -462,6 +538,7 @@ describe('agentpm node sdk - loadAgent', () => {
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
       memoryDirOverride: memoryDir,
+      profileDirOverride: profileDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -476,11 +553,13 @@ describe('agentpm node sdk - loadAgent', () => {
       toolDirOverride: toolsDir,
       knowledgeDirOverride: knowledgeDir,
       memoryDirOverride: memoryDir,
+      profileDirOverride: profileDir,
       lockfileOverride: lockfilePath,
     });
 
     expect(loaded.manifest.version).toBe('0.2.0');
     expect(loaded.resolvedSkills[0]?.version).toBe('0.2.0');
+    expect(loaded.resolvedProfiles.map((entry) => entry.version)).toEqual(['0.1.0', '0.2.0']);
   });
 
   it('keeps memory refs from the lockfile even when the installed package is missing on disk', async () => {
@@ -525,6 +604,7 @@ describe('agentpm node sdk - loadAgent', () => {
     const loaded = await loadAgent(agentSpec, {
       agentDirOverride: agentsDir,
       memoryDirOverride: memoryDir,
+      profileDirOverride: profileDir,
       lockfileOverride: missingMemoryLockfilePath,
     });
 
@@ -535,6 +615,64 @@ describe('agentpm node sdk - loadAgent', () => {
         name: '@zack/missing-memory',
         version: '0.9.0',
         integrity: 'sha256-missing-memory',
+        root: null,
+        manifestPath: null,
+      },
+    ]);
+  });
+
+  it('keeps profile refs from the lockfile even when the installed package is missing on disk', async () => {
+    const missingProfileLockfilePath = join(tmp, 'agent-missing-profile.lock');
+    writeFileSync(
+      missingProfileLockfilePath,
+      JSON.stringify(
+        {
+          lockfile_version: 3,
+          generated: '2026-05-23T00:00:00Z',
+          packages: {
+            'agent:@zack/support-agent@0.1.0': {
+              kind: 'agent',
+              name: '@zack/support-agent',
+              version: '0.1.0',
+              integrity: 'sha256-agent',
+            },
+            'profile:@zack/missing-style@0.9.0': {
+              kind: 'profile',
+              name: '@zack/missing-style',
+              version: '0.9.0',
+              integrity: 'sha256-missing-profile',
+            },
+          },
+          roots: {
+            'agent:@zack/support-agent@0.1.0': {
+              profiles: ['profile:@zack/missing-style@0.9.0'],
+              reserved: {
+                knowledge: [],
+                memory: [],
+                profiles: [],
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const loaded = await loadAgent(agentSpec, {
+      agentDirOverride: agentsDir,
+      profileDirOverride: profileDir,
+      lockfileOverride: missingProfileLockfilePath,
+    });
+
+    expect(loaded.resolvedProfiles).toEqual([
+      {
+        packageKey: 'profile:@zack/missing-style@0.9.0',
+        kind: 'profile',
+        name: '@zack/missing-style',
+        version: '0.9.0',
+        integrity: 'sha256-missing-profile',
         root: null,
         manifestPath: null,
       },
