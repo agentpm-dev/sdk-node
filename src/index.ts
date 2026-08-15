@@ -49,6 +49,8 @@ export type AgentMeta = {
   knowledge?: DependencyReference[];
   memory?: DependencyReference[];
   profiles?: DependencyReference[];
+  loop?: DependencyReference;
+  bindings?: AgentBindings;
 };
 
 export type SkillCompatibility = {
@@ -302,6 +304,113 @@ export type ProfileMeta = {
   profile: ProfileMetadata;
 };
 
+export type LoopPhaseAccessMemory = {
+  read?: boolean;
+  write?: boolean;
+};
+
+export type LoopPhaseAccess = {
+  tools?: boolean;
+  knowledge?: boolean;
+  memory?: LoopPhaseAccessMemory;
+};
+
+export type LoopOutcome = {
+  id: string;
+  description: string;
+};
+
+export type LoopPhase = {
+  id: string;
+  objective: string;
+  access?: LoopPhaseAccess;
+  outcomes?: LoopOutcome[];
+};
+
+export type LoopTransition = {
+  from: string;
+  on: string;
+  to: string;
+};
+
+export type LoopLimits = {
+  max_steps?: number;
+};
+
+export type LoopCheckpoint = {
+  id: string;
+  type: 'approval';
+  before_phase: string;
+  on_reject: string;
+};
+
+export type LoopToolFailurePolicy =
+  | {
+      action: 'retry';
+      max_retries: number;
+      on_exhausted: 'fail_phase' | 'abort' | 'handoff';
+    }
+  | {
+      action: 'fail_phase' | 'abort' | 'handoff';
+    };
+
+export type LoopPhaseFailurePolicy = {
+  action: 'abort' | 'handoff';
+};
+
+export type LoopErrorPolicy = {
+  tool_failure?: LoopToolFailurePolicy;
+  phase_failure?: LoopPhaseFailurePolicy;
+};
+
+export type LoopMetadata = {
+  archetype?: string;
+  entry_phase: string;
+  limits?: LoopLimits;
+  phases: LoopPhase[];
+  transitions: LoopTransition[];
+  checkpoints?: LoopCheckpoint[];
+  error_policy?: LoopErrorPolicy;
+};
+
+export type LoopMeta = {
+  kind: 'loop';
+  name: string;
+  version: string;
+  description?: string;
+  loop: LoopMetadata;
+};
+
+export type AgentMemoryBinding = {
+  package: string;
+  spaces?: string[];
+  operations?: string[];
+};
+
+export type AgentBindingScope = {
+  tools?: string[];
+  skills?: string[];
+  knowledge?: string[];
+  memory?: AgentMemoryBinding[];
+  profiles?: string[];
+};
+
+export type AgentMcpBinding = {
+  id: string;
+  tools: string[];
+};
+
+export type AgentConsumerContext = {
+  file: string;
+};
+
+export type AgentBindings = {
+  global?: AgentBindingScope;
+  phases?: Record<string, AgentBindingScope>;
+  mcp?: AgentMcpBinding[];
+  consumer_context?: AgentConsumerContext;
+};
+
 export type MemoryBuildSourceSchemaEntry = {
   path: string;
   sha256: string;
@@ -370,6 +479,7 @@ type SkillManifest = SkillMeta;
 type KnowledgeManifest = KnowledgeMeta;
 type MemoryManifest = MemoryMeta;
 type ProfileManifest = ProfileMeta;
+type LoopManifest = LoopMeta;
 
 export type LoadOptions = {
   withMeta?: boolean;
@@ -386,6 +496,7 @@ export type LoadAgentOptions = {
   knowledgeDirOverride?: string;
   memoryDirOverride?: string;
   profileDirOverride?: string;
+  loopDirOverride?: string;
   lockfileOverride?: string;
 };
 
@@ -405,6 +516,10 @@ export type LoadMemoryOptions = {
 
 export type LoadProfileOptions = {
   profileDirOverride?: string;
+};
+
+export type LoadLoopOptions = {
+  loopDirOverride?: string;
 };
 
 type Loaded =
@@ -462,6 +577,16 @@ export type ResolvedAgentProfileRef = {
   manifestPath: string | null;
 };
 
+export type ResolvedAgentLoopRef = {
+  packageKey: string;
+  kind: 'loop';
+  name: string;
+  version: string;
+  integrity: string;
+  root: string | null;
+  manifestPath: string | null;
+};
+
 export type ReservedReferences = {
   knowledge: DependencyReference[];
   memory: DependencyReference[];
@@ -477,6 +602,7 @@ export type LoadedAgent = {
   resolvedKnowledge: ResolvedAgentKnowledgeRef[];
   resolvedMemory: ResolvedAgentMemoryRef[];
   resolvedProfiles: ResolvedAgentProfileRef[];
+  resolvedLoop: ResolvedAgentLoopRef | null;
   reserved: ReservedReferences;
 };
 
@@ -551,6 +677,17 @@ export type LoadedProfile = {
   profile: ProfileMetadata;
 };
 
+export type LoadedLoop = {
+  kind: 'loop';
+  name: string;
+  version: string;
+  description?: string;
+  root: string;
+  manifestPath: string;
+  manifest: LoopManifest;
+  loop: LoopMetadata;
+};
+
 type LockedPackage = {
   kind: string;
   name: string;
@@ -566,6 +703,7 @@ type LockedRoot = {
   knowledge?: string[];
   memory?: string[];
   profiles?: string[];
+  loop?: string;
   reserved?: Partial<ReservedReferences>;
 };
 
@@ -1152,6 +1290,58 @@ function resolveProfileRoot(spec: string, profileDirOverride?: string) {
   );
 }
 
+function resolveLoopRoot(spec: string, loopDirOverride?: string) {
+  const atIdx = spec.lastIndexOf('@');
+  if (atIdx <= 0 || atIdx === spec.length - 1) {
+    throw new Error(`Invalid loop spec "${spec}". Expected "@scope/name@version".`);
+  }
+  const rangeOrVersion = spec.slice(atIdx + 1).trim();
+  const name = spec.slice(0, atIdx);
+  const projectRoot = findProjectRoot(process.cwd());
+
+  const candidates = [
+    loopDirOverride,
+    process.env.AGENTPM_LOOP_DIR,
+    resolve(projectRoot, '.agentpm/loops'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/loops') : undefined,
+  ].filter(Boolean) as string[];
+
+  if (semver.valid(rangeOrVersion)) {
+    for (const base of candidates) {
+      const hit = findInstalled(base, name, rangeOrVersion);
+      if (hit) return { ...hit, packageName: name };
+    }
+    throw new Error(`Loop package "${spec}" not found in .agentpm/loops (or overrides).`);
+  }
+
+  const isLatest = rangeOrVersion.toLowerCase() === 'latest';
+  const isRange = semver.validRange(rangeOrVersion) !== null;
+  if (!isLatest && !isRange) {
+    throw new Error(
+      `Invalid version/range "${rangeOrVersion}". Use exact (e.g. 0.1.2), a semver range (e.g. ^0.1), or "latest".`,
+    );
+  }
+
+  for (const base of candidates) {
+    const installed = listInstalledVersions(base, name);
+    if (installed.length === 0) continue;
+
+    const picked = isLatest
+      ? semver.rsort(installed)[0]!
+      : semver.maxSatisfying(installed, rangeOrVersion, { includePrerelease: false });
+
+    if (!picked) continue;
+
+    const hit = findInstalled(base, name, picked);
+    if (hit) return { ...hit, packageName: name };
+  }
+
+  const searched = candidates.join(', ');
+  throw new Error(
+    `No installed version of "${name}" matches "${rangeOrVersion}". Searched: ${searched}`,
+  );
+}
+
 function readManifest(path: string): Manifest {
   const raw = readFileSync(path, 'utf-8');
   const m = JSON.parse(raw);
@@ -1218,6 +1408,18 @@ function readProfileManifest(path: string): ProfileManifest {
     Array.isArray(manifest.profile)
   ) {
     throw new Error(`agent.json missing profile object at: ${path}`);
+  }
+  return manifest;
+}
+
+function readLoopManifest(path: string): LoopManifest {
+  const raw = readFileSync(path, 'utf-8');
+  const manifest = JSON.parse(raw) as LoopManifest;
+  if (manifest?.kind !== 'loop') {
+    throw new Error(`agent.json is not a loop manifest at: ${path}`);
+  }
+  if (!manifest.loop || typeof manifest.loop !== 'object' || Array.isArray(manifest.loop)) {
+    throw new Error(`agent.json missing loop object at: ${path}`);
   }
   return manifest;
 }
@@ -1332,6 +1534,26 @@ function resolveProfileInstalledPath(
     process.env.AGENTPM_PROFILE_DIR,
     resolve(projectRoot, '.agentpm/profiles'),
     process.env.HOME ? resolve(process.env.HOME, '.agentpm/profiles') : undefined,
+  ].filter(Boolean) as string[];
+
+  for (const base of candidates) {
+    const hit = findInstalled(base, name, version);
+    if (hit) return hit;
+  }
+  return null;
+}
+
+function resolveLoopInstalledPath(
+  name: string,
+  version: string,
+  loopDirOverride?: string,
+): { root: string; manifestPath: string } | null {
+  const projectRoot = findProjectRoot(process.cwd());
+  const candidates = [
+    loopDirOverride,
+    process.env.AGENTPM_LOOP_DIR,
+    resolve(projectRoot, '.agentpm/loops'),
+    process.env.HOME ? resolve(process.env.HOME, '.agentpm/loops') : undefined,
   ].filter(Boolean) as string[];
 
   for (const base of candidates) {
@@ -1910,6 +2132,16 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
           }
         }
         try {
+          resolveLoopRoot(spec);
+          throw new Error(
+            `Package "${spec}" is a Loop. load() is tool-only; use loadLoop("${spec}") instead.`,
+          );
+        } catch (loopErr) {
+          if (loopErr instanceof Error && loopErr.message.includes('loadLoop(')) {
+            throw loopErr;
+          }
+        }
+        try {
           resolveProfileRoot(spec);
           throw new Error(
             `Package "${spec}" is a Profile. load() is tool-only; use loadProfile("${spec}") instead.`,
@@ -1921,7 +2153,7 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
         }
         if (err instanceof Error && err.message.includes('not found in .agentpm/tools')) {
           throw new Error(
-            `${err.message} If this package is a Skill, use loadSkill("${spec}") instead. If it is Knowledge, use loadKnowledge("${spec}") instead. If it is Memory, use loadMemory("${spec}") instead. If it is a Profile, use loadProfile("${spec}") instead.`,
+            `${err.message} If this package is a Skill, use loadSkill("${spec}") instead. If it is Knowledge, use loadKnowledge("${spec}") instead. If it is Memory, use loadMemory("${spec}") instead. If it is a Loop, use loadLoop("${spec}") instead. If it is a Profile, use loadProfile("${spec}") instead.`,
           );
         }
         throw err;
@@ -2129,6 +2361,24 @@ export async function loadAgent(
     },
   );
 
+  const resolvedLoop: ResolvedAgentLoopRef | null = (() => {
+    const loopKey = rootEntry.loop;
+    if (!loopKey) return null;
+    const pkg = lock.packages?.[loopKey];
+    if (!pkg || pkg.kind !== 'loop') return null;
+
+    const installed = resolveLoopInstalledPath(pkg.name, pkg.version, options.loopDirOverride);
+    return {
+      packageKey: loopKey,
+      kind: 'loop',
+      name: pkg.name,
+      version: pkg.version,
+      integrity: pkg.integrity,
+      root: installed?.root ?? null,
+      manifestPath: installed?.manifestPath ?? null,
+    };
+  })();
+
   return {
     root,
     manifestPath,
@@ -2138,6 +2388,7 @@ export async function loadAgent(
     resolvedKnowledge,
     resolvedMemory,
     resolvedProfiles,
+    resolvedLoop,
     reserved,
   };
 }
@@ -2380,6 +2631,22 @@ export async function loadProfile(
     manifestPath,
     manifest,
     profile: manifest.profile,
+  };
+}
+
+export async function loadLoop(spec: string, options: LoadLoopOptions = {}): Promise<LoadedLoop> {
+  const { root, manifestPath } = resolveLoopRoot(spec, options.loopDirOverride);
+  const manifest = readLoopManifest(manifestPath);
+
+  return {
+    kind: 'loop',
+    name: manifest.name,
+    version: manifest.version,
+    description: manifest.description,
+    root,
+    manifestPath,
+    manifest,
+    loop: manifest.loop,
   };
 }
 

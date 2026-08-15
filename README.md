@@ -1,6 +1,6 @@
 # AgentPM™ Node SDK
 
-A lean, framework-agnostic **Node.js SDK** for running **AgentPM** tools and inspecting installed agent, Knowledge, Memory, and Profile packages from your app or agent runtime.
+A lean, framework-agnostic **Node.js SDK** for running **AgentPM** tools and inspecting installed agent, Knowledge, Memory, Profile, and Loop packages from your app or agent runtime.
 
 - 🔎 **Discovers** tools installed by `agentpm install` in `.agentpm/tools` (project) and `~/.agentpm/tools` (user), with `AGENTPM_TOOL_DIR` override.
 - 📦 **Loads installed agents** from `.agentpm/agents` and exposes their resolved tool and skill refs from `agent.lock`.
@@ -8,6 +8,7 @@ A lean, framework-agnostic **Node.js SDK** for running **AgentPM** tools and ins
 - 🧠 **Loads installed Knowledge packages** from `.agentpm/knowledge` and exposes mode-specific metadata and canonical paths.
 - ♾️ **Loads installed Memory packages** from `.agentpm/memory` and exposes authored blueprint metadata, build metadata, contract indexes, and resolved contract paths.
 - 🎭 **Loads installed Profile packages** from `.agentpm/profiles` and exposes authored role, objective, and communication metadata.
+- 🔁 **Loads installed Loop packages** from `.agentpm/loops` and exposes authored phase, transition, and error-policy metadata.
 - 🚀 **Executes entrypoints** in a subprocess (`node`/`python`) and exchanges JSON over stdin/stdout.
 - 🧩 **Metadata-aware**: `withMeta` returns `func + meta` (name, version, description, inputs, outputs).
 - 🧪 **Adapters**: tiny helpers (e.g. LangChain) without forcing extra deps.
@@ -83,10 +84,19 @@ const lcTool = await toLangChainTool(loaded);
 ### Load an installed agent package
 
 ```ts
-import { load, loadAgent, loadKnowledge, loadMemory, loadProfile, loadSkill } from '@agentpm/sdk';
+import {
+  load,
+  loadAgent,
+  loadKnowledge,
+  loadLoop,
+  loadMemory,
+  loadProfile,
+  loadSkill,
+} from '@agentpm/sdk';
 
 const agent = await loadAgent('@zack/support-agent@0.1.0');
 const docs = await loadKnowledge('@zack/python-docs@0.1.0');
+const loop = await loadLoop('@zack/incident-response-loop@0.3.0');
 const memory = await loadMemory('@zack/profile-memory@0.1.0');
 const profile = await loadProfile('@zack/support-style@0.1.0');
 const firstSkill = agent.resolvedSkills[0];
@@ -95,8 +105,10 @@ const firstTool = skill.resolvedTools[0];
 const tool = await load(`${firstTool.name}@${firstTool.version}`);
 
 console.log(agent.resolvedKnowledge);
+console.log(agent.resolvedLoop);
 console.log(agent.resolvedMemory);
 console.log(agent.resolvedProfiles);
+console.log(loop.loop.transitions);
 console.log(docs.knowledge.mode);
 console.log(memory.contracts);
 console.log(profile.profile.communication);
@@ -107,6 +119,7 @@ console.log(profile.profile.communication);
 - the installed agent manifest
 - the installed agent root path
 - `resolvedKnowledge` from `agent.lock`
+- `resolvedLoop` from `agent.lock`
 - `resolvedMemory` from `agent.lock`
 - `resolvedProfiles` from `agent.lock`
 - reserved refs (`knowledge`, `memory`, `profiles`) as metadata
@@ -120,8 +133,10 @@ Compatibility note:
 - `resolvedKnowledge` is populated from the modern first-class `root.knowledge` entries in `agent.lock`.
 - `reserved.knowledge` is legacy pass-through metadata from older lockfile shapes. For current installs, treat `resolvedKnowledge` as the authoritative Knowledge dependency list and expect `reserved.knowledge` to usually be empty.
 - If your workspace still has an older pre-Knowledge lockfile shape where Knowledge refs only exist under `reserved.knowledge`, rerun `agentpm install` to rewrite the lockfile before expecting `resolvedKnowledge` to be populated.
+- `resolvedLoop` is populated from the modern first-class `root.loop` entry in `agent.lock`.
 - `resolvedProfiles` is populated from the modern first-class `root.profiles` entries in `agent.lock`.
 - `reserved.profiles` is legacy pass-through metadata from older lockfile shapes. For current installs, treat `resolvedProfiles` as the authoritative Profile dependency list and expect `reserved.profiles` to usually be empty.
+- `manifest.loop` and `manifest.bindings` preserve the authored declarative metadata from the installed `agent.json`.
 
 ### Load an installed skill package
 
@@ -210,6 +225,25 @@ console.log(profile.profile.communication);
 - the installed package root path
 - parsed authored `profile` metadata
 
+### Load an installed Loop package
+
+```ts
+import { loadLoop } from '@agentpm/sdk';
+
+const loop = await loadLoop('@zack/incident-response-loop@0.3.0');
+
+console.log(loop.loop.entry_phase);
+console.log(loop.loop.phases);
+console.log(loop.loop.transitions);
+console.log(loop.loop.error_policy);
+```
+
+`loadLoop()` returns an inspectable Loop object with:
+
+- the installed loop manifest
+- the installed package root path
+- parsed authored `loop` metadata
+
 ### `load()` stays tool-only
 
 ```ts
@@ -226,6 +260,9 @@ await load('@zack/profile-memory@0.1.0');
 
 await load('@zack/support-style@0.1.0');
 // throws: use loadProfile("@zack/support-style@0.1.0") instead
+
+await load('@zack/incident-response-loop@0.3.0');
+// throws: use loadLoop("@zack/incident-response-loop@0.3.0") instead
 ```
 
 ### CJS require
@@ -300,6 +337,16 @@ Installed registry Memory packages live separately:
         memory/
 ```
 
+Installed registry Loop packages live separately:
+
+```
+.agentpm/
+  loops/
+    @zack/incident-response-loop/
+      0.3.0/
+        agent.json
+```
+
 ## Where installed agents are discovered
 
 Resolution order for `loadAgent()`:
@@ -361,6 +408,22 @@ You can also override per call:
 ```ts
 await loadMemory('@zack/profile-memory@0.1.0', {
   memoryDirOverride: '/path/to/memory',
+});
+```
+
+## Where installed Loop packages are discovered
+
+Resolution order for `loadLoop()`:
+
+1. `AGENTPM_LOOP_DIR` (environment variable)
+2. `./.agentpm/loops` (project-local)
+3. `~/.agentpm/loops` (user-local)
+
+You can also override per call:
+
+```ts
+await loadLoop('@zack/incident-response-loop@0.3.0', {
+  loopDirOverride: '/path/to/loops',
 });
 ```
 

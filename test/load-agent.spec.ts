@@ -57,7 +57,12 @@ function makeInstalledSkill(baseDir: string, spec: string) {
   );
 }
 
-function makeInstalledAgent(baseDir: string, spec: string, skillRef: string) {
+function makeInstalledAgent(
+  baseDir: string,
+  spec: string,
+  skillRef: string,
+  options: { loop?: string | Record<string, unknown>; bindings?: Record<string, unknown> } = {},
+) {
   const atIdx = spec.lastIndexOf('@');
   const packageName = spec.slice(0, atIdx);
   const version = spec.slice(atIdx + 1);
@@ -78,6 +83,36 @@ function makeInstalledAgent(baseDir: string, spec: string, skillRef: string) {
         knowledge: [],
         memory: [],
         profiles: [],
+        ...(options.loop ? { loop: options.loop } : {}),
+        ...(options.bindings ? { bindings: options.bindings } : {}),
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+}
+
+function makeInstalledLoop(baseDir: string, spec: string, loop?: Record<string, unknown>) {
+  const atIdx = spec.lastIndexOf('@');
+  const packageName = spec.slice(0, atIdx);
+  const version = spec.slice(atIdx + 1);
+  const root = join(baseDir, `${packageName}/${version}`);
+  const manifestName = packageName.slice(packageName.indexOf('/') + 1);
+  mkdirSync(root, { recursive: true });
+  writeFileSync(
+    join(root, 'agent.json'),
+    JSON.stringify(
+      {
+        kind: 'loop',
+        name: manifestName,
+        version,
+        description: 'Installed loop fixture',
+        loop: loop ?? {
+          entry_phase: 'assess',
+          phases: [{ id: 'assess', objective: 'Assess the issue.' }],
+          transitions: [{ from: 'assess', on: 'complete', to: '$end' }],
+        },
       },
       null,
       2,
@@ -263,9 +298,11 @@ describe('agentpm node sdk - loadAgent', () => {
   const knowledgeDir = join(tmp, '.agentpm', 'knowledge');
   const memoryDir = join(tmp, '.agentpm', 'memory');
   const profileDir = join(tmp, '.agentpm', 'profiles');
+  const loopDir = join(tmp, '.agentpm', 'loops');
   const lockfilePath = join(tmp, 'agent.lock');
   const agentSpec = '@zack/support-agent@0.1.0';
   const newerAgentSpec = '@zack/support-agent@0.2.0';
+  const loopSpec = '@zack/incident-response-loop@0.3.0';
 
   beforeAll(() => {
     makeInstalledTool(toolsDir, '@zack/capitalize@0.1.0');
@@ -275,6 +312,26 @@ describe('agentpm node sdk - loadAgent', () => {
     makeInstalledKnowledge(knowledgeDir, '@zack/support-playbook@0.1.0', 'context');
     makeInstalledMemory(memoryDir, '@zack/profile-memory@0.1.0');
     makeInstalledProfile(profileDir, '@zack/support-style@0.1.0');
+    makeInstalledLoop(loopDir, loopSpec, {
+      archetype: 'investigate_review_respond',
+      entry_phase: 'assess',
+      phases: [
+        {
+          id: 'assess',
+          objective: 'Assess the issue and decide whether work should proceed.',
+          outcomes: [
+            { id: 'proceed', description: 'The issue should move forward.' },
+            { id: 'handoff', description: 'The issue should be handed off.' },
+          ],
+        },
+        { id: 'execute', objective: 'Complete the requested work.' },
+      ],
+      transitions: [
+        { from: 'assess', on: 'proceed', to: 'execute' },
+        { from: 'assess', on: 'handoff', to: '$handoff' },
+        { from: 'execute', on: 'complete', to: '$end' },
+      ],
+    });
     makeInstalledProfile(profileDir, '@zack/escalation-style@0.2.0', {
       identity: {
         role: 'Escalation reviewer',
@@ -287,7 +344,25 @@ describe('agentpm node sdk - loadAgent', () => {
         guidelines: ['State the decision first'],
       },
     });
-    makeInstalledAgent(agentsDir, agentSpec, '@zack/triage-skill@0.1.0');
+    makeInstalledAgent(agentsDir, agentSpec, '@zack/triage-skill@0.1.0', {
+      loop: '@zack/incident-response-loop',
+      bindings: {
+        global: {
+          tools: ['@zack/capitalize'],
+          knowledge: ['@zack/python-docs'],
+          memory: [{ package: '@zack/profile-memory', spaces: ['profile'] }],
+          profiles: ['@zack/support-style'],
+        },
+        phases: {
+          execute: {
+            skills: ['@zack/triage-skill'],
+            memory: [{ package: '@zack/profile-memory', operations: ['refresh_profile'] }],
+          },
+        },
+        mcp: [{ id: 'workspace-tools', tools: ['@zack/capitalize'] }],
+        consumer_context: { file: 'runtime/context.json' },
+      },
+    });
     makeInstalledAgent(agentsDir, newerAgentSpec, '@zack/triage-skill@0.2.0');
     writeFileSync(
       lockfilePath,
@@ -356,6 +431,12 @@ describe('agentpm node sdk - loadAgent', () => {
               version: '0.2.0',
               integrity: 'sha256-profile-2',
             },
+            'loop:@zack/incident-response-loop@0.3.0': {
+              kind: 'loop',
+              name: '@zack/incident-response-loop',
+              version: '0.3.0',
+              integrity: 'sha256-loop',
+            },
           },
           roots: {
             'agent:@zack/support-agent@0.1.0': {
@@ -364,6 +445,7 @@ describe('agentpm node sdk - loadAgent', () => {
               knowledge: ['knowledge:@zack/python-docs@0.1.0'],
               memory: ['memory:@zack/profile-memory@0.1.0'],
               profiles: ['profile:@zack/support-style@0.1.0'],
+              loop: 'loop:@zack/incident-response-loop@0.3.0',
               reserved: {
                 knowledge: [],
                 memory: [],
@@ -405,6 +487,7 @@ describe('agentpm node sdk - loadAgent', () => {
       knowledgeDirOverride: knowledgeDir,
       memoryDirOverride: memoryDir,
       profileDirOverride: profileDir,
+      loopDirOverride: loopDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -467,6 +550,32 @@ describe('agentpm node sdk - loadAgent', () => {
         manifestPath: expect.stringContaining('.agentpm/profiles'),
       },
     ]);
+    expect(loaded.resolvedLoop).toEqual({
+      packageKey: 'loop:@zack/incident-response-loop@0.3.0',
+      kind: 'loop',
+      name: '@zack/incident-response-loop',
+      version: '0.3.0',
+      integrity: 'sha256-loop',
+      root: expect.stringContaining('.agentpm/loops'),
+      manifestPath: expect.stringContaining('.agentpm/loops'),
+    });
+    expect(loaded.manifest.loop).toBe('@zack/incident-response-loop');
+    expect(loaded.manifest.bindings).toEqual({
+      global: {
+        tools: ['@zack/capitalize'],
+        knowledge: ['@zack/python-docs'],
+        memory: [{ package: '@zack/profile-memory', spaces: ['profile'] }],
+        profiles: ['@zack/support-style'],
+      },
+      phases: {
+        execute: {
+          skills: ['@zack/triage-skill'],
+          memory: [{ package: '@zack/profile-memory', operations: ['refresh_profile'] }],
+        },
+      },
+      mcp: [{ id: 'workspace-tools', tools: ['@zack/capitalize'] }],
+      consumer_context: { file: 'runtime/context.json' },
+    });
   });
 
   it('ignores legacy reserved.skills entries from older lockfile shapes', async () => {
@@ -539,6 +648,7 @@ describe('agentpm node sdk - loadAgent', () => {
       knowledgeDirOverride: knowledgeDir,
       memoryDirOverride: memoryDir,
       profileDirOverride: profileDir,
+      loopDirOverride: loopDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -554,6 +664,7 @@ describe('agentpm node sdk - loadAgent', () => {
       knowledgeDirOverride: knowledgeDir,
       memoryDirOverride: memoryDir,
       profileDirOverride: profileDir,
+      loopDirOverride: loopDir,
       lockfileOverride: lockfilePath,
     });
 
@@ -677,6 +788,62 @@ describe('agentpm node sdk - loadAgent', () => {
         manifestPath: null,
       },
     ]);
+  });
+
+  it('keeps loop metadata from the lockfile even when the installed loop package is missing on disk', async () => {
+    const missingLoopLockfilePath = join(tmp, 'agent-missing-loop.lock');
+    writeFileSync(
+      missingLoopLockfilePath,
+      JSON.stringify(
+        {
+          lockfile_version: 3,
+          generated: '2026-05-23T00:00:00Z',
+          packages: {
+            'agent:@zack/support-agent@0.1.0': {
+              kind: 'agent',
+              name: '@zack/support-agent',
+              version: '0.1.0',
+              integrity: 'sha256-agent',
+            },
+            'loop:@zack/missing-loop@0.9.0': {
+              kind: 'loop',
+              name: '@zack/missing-loop',
+              version: '0.9.0',
+              integrity: 'sha256-missing-loop',
+            },
+          },
+          roots: {
+            'agent:@zack/support-agent@0.1.0': {
+              loop: 'loop:@zack/missing-loop@0.9.0',
+              reserved: {
+                knowledge: [],
+                memory: [],
+                profiles: [],
+              },
+            },
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+
+    const loaded = await loadAgent(agentSpec, {
+      agentDirOverride: agentsDir,
+      loopDirOverride: loopDir,
+      lockfileOverride: missingLoopLockfilePath,
+    });
+
+    expect(loaded.resolvedLoop).toEqual({
+      packageKey: 'loop:@zack/missing-loop@0.9.0',
+      kind: 'loop',
+      name: '@zack/missing-loop',
+      version: '0.9.0',
+      integrity: 'sha256-missing-loop',
+      root: null,
+      manifestPath: null,
+    });
   });
 
   it('fails with an actionable error when agent.lock is missing', async () => {
