@@ -116,6 +116,7 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   const knowledgeSpec = '@zack/python-docs@0.1.0';
   const memorySpec = '@zack/conversation-memory@0.1.0';
   const profileSpec = '@zack/support-style@0.1.0';
+  const loopSpec = '@zack/incident-response-loop@0.1.0';
 
   beforeAll(() => {
     makeToolPackage(tmp, okSpec);
@@ -313,6 +314,32 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
       'utf8',
     );
     process.env.AGENTPM_PROFILE_DIR = join(tmp, 'profiles');
+
+    const loopAtIdx = loopSpec.lastIndexOf('@');
+    const loopName = loopSpec.slice(0, loopAtIdx);
+    const loopVersion = loopSpec.slice(loopAtIdx + 1);
+    const loopRoot = join(tmp, 'loops', `${loopName}/${loopVersion}`);
+    mkdirSync(loopRoot, { recursive: true });
+    writeFileSync(
+      join(loopRoot, 'agent.json'),
+      JSON.stringify(
+        {
+          kind: 'loop',
+          name: 'incident-response-loop',
+          version: loopVersion,
+          description: 'Loop fixture',
+          loop: {
+            entry_phase: 'assess',
+            phases: [{ id: 'assess', objective: 'Assess the request.' }],
+            transitions: [{ from: 'assess', on: 'complete', to: '$end' }],
+          },
+        },
+        null,
+        2,
+      ),
+      'utf8',
+    );
+    process.env.AGENTPM_LOOP_DIR = join(tmp, 'loops');
   });
 
   afterAll(() => {
@@ -320,6 +347,7 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
     delete process.env.AGENTPM_KNOWLEDGE_DIR;
     delete process.env.AGENTPM_MEMORY_DIR;
     delete process.env.AGENTPM_PROFILE_DIR;
+    delete process.env.AGENTPM_LOOP_DIR;
     rmSync(tmp, { recursive: true, force: true });
   });
 
@@ -418,6 +446,10 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
 
   it('rejects installed profile specs with guidance to use loadProfile', async () => {
     await expect(load(profileSpec, { toolDirOverride: tmp })).rejects.toThrow(/use loadProfile/i);
+  });
+
+  it('rejects installed loop specs with guidance to use loadLoop', async () => {
+    await expect(load(loopSpec, { toolDirOverride: tmp })).rejects.toThrow(/use loadLoop/i);
   });
 
   it('rejects uninstalled skill-like specs with guidance to use loadSkill', async () => {
