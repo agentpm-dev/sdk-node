@@ -220,6 +220,7 @@ export type MemoryOperation = {
   description?: string;
   inputs?: MemoryOperationRef[];
   output?: MemoryOperationRef;
+  output_mode?: string;
   targets?: MemoryOperationTarget[];
   trigger?: MemoryOperationTrigger;
   source_handling?: string;

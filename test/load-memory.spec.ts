@@ -46,6 +46,15 @@ function writeInstalledMemory(baseDir: string, spec: string) {
               retrieval: { modes: ['key'] },
             },
           },
+          operations: {
+            refresh_profile: {
+              type: 'transform',
+              inputs: [{ space: 'profile', record_type: 'user_preference' }],
+              output: { space: 'profile', record_type: 'user_preference' },
+              output_mode: 'replace_input',
+              source_handling: 'retain',
+            },
+          },
         },
       },
       null,
@@ -156,6 +165,7 @@ describe('agentpm node sdk - loadMemory', () => {
 
     expect(loaded.kind).toBe('memory');
     expect(loaded.memory.spaces.profile.model).toBe('document');
+    expect(loaded.memory.operations?.refresh_profile?.output_mode).toBe('replace_input');
     expect(loaded.build.type).toBe('agentpm-memory-contracts');
     expect(loaded.contractIndex.type).toBe('agentpm-memory-contract-index');
     expect(loaded.sourceSchemaPaths).toEqual([
