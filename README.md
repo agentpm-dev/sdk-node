@@ -138,6 +138,40 @@ Compatibility note:
 - `reserved.profiles` is legacy pass-through metadata from older lockfile shapes. For current installs, treat `resolvedProfiles` as the authoritative Profile dependency list and expect `reserved.profiles` to usually be empty.
 - `manifest.loop` and `manifest.bindings` preserve the authored declarative metadata from the installed `agent.json`.
 
+### Run Harness over the machine protocol
+
+```ts
+import { HarnessClient } from '@agentpm/sdk';
+
+const harness = new HarnessClient({
+  agent: './agent.json',
+  cwd: process.cwd(),
+});
+
+harness.registerModelProvider('company-model', async ({ request }) => ({
+  id: 'turn-1',
+  assistant_content: 'Handled by the host model.',
+  actions: [],
+  usage: {},
+  finish_reason: 'stop',
+  provider_metadata: { model: request.selection.model },
+}));
+
+harness.onBeforeToolCall(async (input) => ({
+  decision: 'continue',
+  patch: { arguments: input.arguments },
+}));
+
+harness.onApproval(async () => 'approve');
+
+const result = await harness.run('Use the configured agent.');
+await harness.shutdown();
+
+console.log(result);
+```
+
+Register host services before starting a run. The SDK launches `agentpm harness --machine`, correlates request/response frames, streams Harness events, and routes host-service callbacks for model providers, hooks, and approvals.
+
 ### Load an installed skill package
 
 ```ts
