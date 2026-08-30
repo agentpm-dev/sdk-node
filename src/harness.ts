@@ -70,9 +70,24 @@ export type HostServiceRegistration = {
   registry_id: string;
 };
 
+export type HostServiceRegistrationResult = {
+  registered: boolean;
+  service: HostServiceRegistration;
+  active: boolean;
+  reason?: string | null;
+  [key: string]: unknown;
+};
+
 export type HarnessClientOptions = {
   agentpmPath?: string;
   args?: string[];
+  /**
+   * Agent selector passed to `agentpm harness`.
+   *
+   * This may be a local Agent manifest path, such as `./agent.json`, or an
+   * installed Agent package ref, such as `@scope/name@1.2.3`. Omit it to use
+   * Harness workspace discovery/default Agent selection.
+   */
   agent?: string;
   configPath?: string;
   stateDir?: string;
@@ -92,29 +107,186 @@ export type HostServiceHandler = (
   request: HostServiceRequest,
 ) => HarnessJsonValue | Promise<HarnessJsonValue>;
 
-export type HookDecision =
+export type ModelProviderCapabilities = {
+  provider?: string;
+  model?: string;
+  models?: string[];
+  semantic_actions: boolean;
+  structured_output: boolean;
+  multimodal_input: boolean;
+  context_window_tokens?: number;
+  usage_reporting: boolean;
+};
+
+export type ModelProviderCapabilityOverrides = Partial<ModelProviderCapabilities> &
+  Record<string, HarnessJsonValue | undefined>;
+
+export type EmbeddingSpaceCapability = {
+  provider?: string;
+  model: string;
+  dimensions: number;
+  normalized: boolean;
+};
+
+export type EmbeddingProviderCapabilities = {
+  embedding_spaces: EmbeddingSpaceCapability[];
+};
+
+export type KnowledgePackageRealization = {
+  package: string;
+  version?: string;
+  corpus?: string;
+  ready: boolean;
+};
+
+export type KnowledgeProviderCapabilities = {
+  modes?: string[];
+  features?: string[];
+  packages?: KnowledgePackageRealization[];
+};
+
+export type MemoryPackageRealization = {
+  package: string;
+  version?: string;
+  ready: boolean;
+};
+
+export type MemoryProviderCapabilities = {
+  descriptor: HarnessJsonValue;
+  packages?: MemoryPackageRealization[];
+};
+
+export type ApprovalCapabilities = {
+  approval: true;
+  cancellation?: boolean;
+};
+
+export type HookCapabilities = {
+  hooks: HarnessHookId[];
+};
+
+export type HostProviderCapabilities =
+  | ModelProviderCapabilityOverrides
+  | EmbeddingProviderCapabilities
+  | KnowledgeProviderCapabilities
+  | MemoryProviderCapabilities
+  | Record<string, HarnessJsonValue>;
+
+export type HookContinueDecision<TPatch extends object = Record<string, HarnessJsonValue>> = {
+  decision: 'continue';
+  patch?: TPatch;
+};
+
+export type HookRejectDecision = {
+  decision: 'reject';
+  reason: string;
+};
+
+export type HookDecision<TPatch extends object = Record<string, HarnessJsonValue>> =
+  | HookContinueDecision<TPatch>
+  | HookRejectDecision;
+
+export type HookHandler<
+  TInput = HarnessJsonValue,
+  TPatch extends object = Record<string, HarnessJsonValue>,
+> = (input: TInput) => HookDecision<TPatch> | void | Promise<HookDecision<TPatch> | void>;
+
+export type HookPhaseSnapshot = {
+  phase_id: string;
+  phase_objective: string;
+  completion: HarnessJsonValue;
+};
+
+export type BeforeModelRequestPhase = HookPhaseSnapshot;
+
+export type BeforeModelRequestModel = {
+  provider: string;
+  model: string;
+  options?: HarnessJsonValue;
+};
+
+export type BeforeModelRequestSection = {
+  number: number;
+  title: string;
+  content: string;
+  mutable: boolean;
+};
+
+export type BeforeModelRequestInput = {
+  run_id: string;
+  phase_execution_id: string;
+  phase: BeforeModelRequestPhase;
+  model?: BeforeModelRequestModel;
+  sections: BeforeModelRequestSection[];
+  repair_feedback?: string;
+};
+
+export type BeforeModelRequestContextSection = {
+  title: string;
+  content: string;
+};
+
+export type BeforeModelRequestPatch = {
+  context_sections?: BeforeModelRequestContextSection[];
+  provider_options?: Record<string, HarnessJsonValue>;
+};
+
+export type BeforeModelRequestDecision = HookDecision<BeforeModelRequestPatch>;
+
+export type BeforeModelRequestHookHandler = HookHandler<
+  BeforeModelRequestInput,
+  BeforeModelRequestPatch
+>;
+
+export type BeforeToolSelectionCandidate = {
+  canonical_id: string;
+  description: string;
+  source: string;
+};
+
+export type BeforeToolSelectionInput = {
+  phase: HookPhaseSnapshot;
+  candidates: BeforeToolSelectionCandidate[];
+};
+
+export type BeforeToolSelectionPatch = {
+  candidate_ids?: string[];
+};
+
+export type BeforeToolSelectionDecision = HookDecision<BeforeToolSelectionPatch>;
+
+export type BeforeToolSelectionHookHandler = HookHandler<
+  BeforeToolSelectionInput,
+  BeforeToolSelectionPatch
+>;
+
+export type BeforeToolCallInput = {
+  phase_id: string;
+  tool: string;
+  arguments: HarnessJsonValue;
+};
+
+export type BeforeToolCallPatch = {
+  arguments?: HarnessJsonValue;
+};
+
+export type BeforeToolCallDecision = HookDecision<BeforeToolCallPatch>;
+
+export type BeforeToolCallHookHandler = HookHandler<BeforeToolCallInput, BeforeToolCallPatch>;
+
+export type GenericHookDecision = HookDecision;
+
+export type GenericHookHandler<TInput = HarnessJsonValue> = HookHandler<TInput>;
+
+export type ApprovalHandler = (request: HarnessJsonValue) =>
   | {
-      decision?: 'continue';
-      patch?: Record<string, HarnessJsonValue>;
+      decision: string;
     }
-  | {
-      decision: 'reject';
-      reason: string;
-    };
-
-export type HookHandler<TInput = HarnessJsonValue> = (
-  input: TInput,
-) => HookDecision | void | Promise<HookDecision | void>;
-
-export type ApprovalHandler = (
-  request: HarnessJsonValue,
-) =>
   | 'approve'
   | 'approved'
   | 'deny'
   | 'denied'
   | 'pending'
-  | { decision: string }
   | Promise<string | { decision: string }>;
 
 export type ModelProviderHandler = (
@@ -133,6 +305,7 @@ type RegisteredService = {
   hooks?: HarnessHookId[];
   capabilities?: HarnessJsonValue;
   requestTimeoutMs?: number;
+  registration?: HostServiceRegistrationResult;
 };
 
 const PROTOCOL = 'agentpm-harness-machine' as const;
@@ -159,6 +332,7 @@ export class HarnessClient {
   private readonly pending = new Map<string, PendingRequest>();
   private readonly services = new Map<string, RegisteredService>();
   private readonly registeredServiceKeys = new Set<string>();
+  private readonly registrationResults = new Map<string, HostServiceRegistrationResult>();
   private registrationFlush: Promise<void> = Promise.resolve();
   private nextHookRegistrationId = 0;
   private readonly events: HarnessEvent[] = [];
@@ -336,14 +510,26 @@ export class HarnessClient {
       requestTimeoutMs: options.requestTimeoutMs,
     });
     this.registeredServiceKeys.delete(key);
+    this.registrationResults.delete(key);
     if (this.initialized) this.enqueueRegistrationFlush();
     return this;
+  }
+
+  hostServiceRegistration(
+    role: HarnessServiceRole,
+    registryId: string,
+  ): HostServiceRegistrationResult | undefined {
+    return this.registrationResults.get(serviceKey(role, registryId));
+  }
+
+  hostServiceRegistrations(): HostServiceRegistrationResult[] {
+    return Array.from(this.registrationResults.values());
   }
 
   registerModelProvider(
     registryId: string,
     handler: ModelProviderHandler,
-    capabilities: HarnessJsonValue = defaultModelCapabilities(),
+    capabilities: ModelProviderCapabilityOverrides = {},
   ): this {
     return this.registerHostService(
       'model',
@@ -352,43 +538,69 @@ export class HarnessClient {
         if (method !== 'generate') throw new Error(`Unsupported model method ${method}`);
         return handler(payload);
       },
-      { capabilities },
+      { capabilities: defaultModelCapabilities(registryId, capabilities) },
     );
   }
 
   registerHostProvider(
+    role: 'model',
+    registryId: string,
+    handler: HostServiceHandler,
+    capabilities?: ModelProviderCapabilityOverrides,
+  ): this;
+  registerHostProvider(
+    role: 'embedding',
+    registryId: string,
+    handler: HostServiceHandler,
+    capabilities?: EmbeddingProviderCapabilities,
+  ): this;
+  registerHostProvider(
+    role: 'knowledge',
+    registryId: string,
+    handler: HostServiceHandler,
+    capabilities?: KnowledgeProviderCapabilities,
+  ): this;
+  registerHostProvider(
+    role: 'memory',
+    registryId: string,
+    handler: HostServiceHandler,
+    capabilities?: MemoryProviderCapabilities,
+  ): this;
+  registerHostProvider(
     role: Exclude<HarnessServiceRole, 'hook' | 'approval'>,
     registryId: string,
     handler: HostServiceHandler,
-    capabilities: HarnessJsonValue = {},
+    capabilities: HostProviderCapabilities = {},
   ): this {
-    return this.registerHostService(role, registryId, handler, { capabilities });
+    return this.registerHostService(role, registryId, handler, {
+      capabilities: normalizeHostProviderCapabilities(role, registryId, capabilities),
+    });
   }
 
   onBeforeModelRequest(
-    handler: HookHandler,
+    handler: BeforeModelRequestHookHandler,
     options: { registryId?: string; requestTimeoutMs?: number } = {},
   ): this {
-    return this.registerHook('before_model_request', handler, options);
+    return this.registerHook('before_model_request', handler as GenericHookHandler, options);
   }
 
   onBeforeToolSelection(
-    handler: HookHandler,
+    handler: BeforeToolSelectionHookHandler,
     options: { registryId?: string; requestTimeoutMs?: number } = {},
   ): this {
-    return this.registerHook('before_tool_selection', handler, options);
+    return this.registerHook('before_tool_selection', handler as GenericHookHandler, options);
   }
 
   onBeforeToolCall(
-    handler: HookHandler,
+    handler: BeforeToolCallHookHandler,
     options: { registryId?: string; requestTimeoutMs?: number } = {},
   ): this {
-    return this.registerHook('before_tool_call', handler, options);
+    return this.registerHook('before_tool_call', handler as GenericHookHandler, options);
   }
 
   registerHook(
     hook: HarnessHookId,
-    handler: HookHandler,
+    handler: GenericHookHandler,
     options: { registryId?: string; requestTimeoutMs?: number } = {},
   ): this {
     const registryId = this.allocateHookRegistryId(options.registryId ?? DEFAULT_HOOK_REGISTRY_ID);
@@ -402,7 +614,7 @@ export class HarnessClient {
       },
       {
         hooks: [hook],
-        capabilities: { hooks: [hook] },
+        capabilities: { hooks: [hook] } satisfies HookCapabilities,
         requestTimeoutMs: options.requestTimeoutMs,
       },
     );
@@ -418,12 +630,19 @@ export class HarnessClient {
     return registryId;
   }
 
-  onApproval(handler: ApprovalHandler): this {
-    return this.registerHostService('approval', 'controller', async ({ method, payload }) => {
-      if (method !== 'request_approval') throw new Error(`Unsupported approval method ${method}`);
-      const decision = await handler(payload);
-      return typeof decision === 'string' ? { decision } : decision;
-    });
+  onApproval(handler: ApprovalHandler, capabilities: Partial<ApprovalCapabilities> = {}): this {
+    return this.registerHostService(
+      'approval',
+      'controller',
+      async ({ method, payload }) => {
+        if (method !== 'request_approval') {
+          throw new Error(`Unsupported approval method ${method}`);
+        }
+        const decision = await handler(payload);
+        return typeof decision === 'string' ? { decision } : decision;
+      },
+      { capabilities: defaultApprovalCapabilities(capabilities) },
+    );
   }
 
   private defaultArgs(): string[] {
@@ -453,13 +672,16 @@ export class HarnessClient {
   private async flushRegistration(service: RegisteredService): Promise<void> {
     const key = serviceKey(service.role, service.registryId);
     if (this.registeredServiceKeys.has(key)) return;
-    await this.request('register_host_service', {
+    const response = await this.request('register_host_service', {
       role: service.role,
       registry_id: service.registryId,
       capabilities: service.capabilities ?? {},
       hooks: service.hooks ?? [],
       request_timeout_ms: service.requestTimeoutMs ?? 120_000,
     });
+    const registration = normalizeHostServiceRegistrationResult(response, service);
+    service.registration = registration;
+    this.registrationResults.set(key, registration);
     this.registeredServiceKeys.add(key);
   }
 
@@ -639,12 +861,74 @@ function serviceKey(role: HarnessServiceRole, registryId: string): string {
   return `${role}:${registryId}`;
 }
 
-function defaultModelCapabilities(): HarnessJsonValue {
+function normalizeHostServiceRegistrationResult(
+  value: HarnessJsonValue,
+  service: RegisteredService,
+): HostServiceRegistrationResult {
+  const fallback: HostServiceRegistrationResult = {
+    registered: true,
+    service: {
+      role: service.role,
+      registry_id: service.registryId,
+    },
+    active: true,
+  };
+  if (!isJsonObject(value)) return fallback;
+  const serviceValue = isJsonObject(value.service) ? value.service : undefined;
+  const role =
+    typeof serviceValue?.role === 'string'
+      ? (serviceValue.role as HarnessServiceRole)
+      : service.role;
+  const registryId =
+    typeof serviceValue?.registry_id === 'string' ? serviceValue.registry_id : service.registryId;
   return {
+    ...value,
+    registered: typeof value.registered === 'boolean' ? value.registered : true,
+    service: {
+      role,
+      registry_id: registryId,
+    },
+    active: typeof value.active === 'boolean' ? value.active : true,
+    reason: typeof value.reason === 'string' || value.reason === null ? value.reason : undefined,
+  };
+}
+
+function isJsonObject(
+  value: HarnessJsonValue | undefined,
+): value is { [key: string]: HarnessJsonValue } {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function defaultModelCapabilities(
+  registryId: string,
+  overrides: ModelProviderCapabilityOverrides,
+): HarnessJsonValue {
+  return {
+    provider: registryId,
     semantic_actions: true,
     structured_output: true,
     multimodal_input: false,
     usage_reporting: true,
+    ...overrides,
+  };
+}
+
+function normalizeHostProviderCapabilities(
+  role: Exclude<HarnessServiceRole, 'hook' | 'approval'>,
+  registryId: string,
+  capabilities: HostProviderCapabilities,
+): HarnessJsonValue {
+  if (role === 'model') {
+    return defaultModelCapabilities(registryId, capabilities as ModelProviderCapabilityOverrides);
+  }
+  return capabilities as HarnessJsonValue;
+}
+
+function defaultApprovalCapabilities(overrides: Partial<ApprovalCapabilities>): HarnessJsonValue {
+  return {
+    approval: true,
+    cancellation: false,
+    ...overrides,
   };
 }
 

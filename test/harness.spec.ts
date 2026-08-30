@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -19,6 +19,14 @@ function makeFakeHarness(source: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'agentpm-node-harness-'));
   const script = join(dir, 'fake-harness.mjs');
   writeFileSync(script, source, 'utf8');
+  return script;
+}
+
+function makeFakeAgentpmCommand(source: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'agentpm-node-harness-'));
+  const script = join(dir, 'agentpm');
+  writeFileSync(script, `#!/usr/bin/env node\n${source}`, 'utf8');
+  chmodSync(script, 0o755);
   return script;
 }
 
@@ -77,6 +85,32 @@ describe('HarnessClient', () => {
     const runStarted = await client.waitForEvent((event) => event.event_type === 'run_started');
     expect(runStarted.payload).toEqual({ fields: { input: 'hello' } });
     await expect(client.shutdown()).resolves.toEqual({ shutdown: true });
+  });
+
+  it('passes installed Agent refs through as the harness positional selector', async () => {
+    const command = makeFakeAgentpmCommand(`
+      import readline from 'node:readline';
+      const protocol = 'agentpm-harness-machine';
+      const write = (frame) => process.stdout.write(JSON.stringify({ protocol, version: 1, ...frame }) + '\\n');
+      const rl = readline.createInterface({ input: process.stdin });
+      rl.on('line', (line) => {
+        const frame = JSON.parse(line);
+        if (frame.method === 'initialize') {
+          write({ kind: 'response', id: frame.id, payload: { argv: process.argv.slice(2), session: { protocol, version: 1 } } });
+        }
+      });
+    `);
+    cleanup.push(resolve(command, '..'));
+
+    const client = new HarnessClient({
+      agentpmPath: command,
+      agent: '@zack/support-agent@0.1.0',
+    });
+
+    await expect(client.initialize()).resolves.toMatchObject({
+      argv: ['harness', '@zack/support-agent@0.1.0', '--machine'],
+    });
+    client.stop();
   });
 
   it('iterates buffered and future events once in order', async () => {
@@ -282,6 +316,97 @@ describe('HarnessClient', () => {
     client.stop();
   });
 
+  it('advertises role-specific host service capabilities', async () => {
+    const script = makeFakeHarness(
+      commonHarnessPrelude(`
+        const registrations = [];
+        rl.on('line', (line) => {
+          const frame = JSON.parse(line);
+          if (frame.method === 'initialize') {
+            write({ kind: 'response', id: frame.id, payload: { session: { protocol, version: 1 }, preflight: { status: 'ready' }, required_host_services: [] } });
+          } else if (frame.method === 'register_host_service') {
+            registrations.push({
+              role: frame.payload.role,
+              registry_id: frame.payload.registry_id,
+              capabilities: frame.payload.capabilities,
+              hooks: frame.payload.hooks,
+            });
+            write({ kind: 'response', id: frame.id, payload: { registered: true } });
+          } else if (frame.method === 'start_run') {
+            write({ kind: 'response', id: frame.id, payload: { status: 'ended', output: { registrations }, report: {} } });
+          }
+        });
+      `),
+    );
+    cleanup.push(resolve(script, '..'));
+    const client = new HarnessClient({ agentpmPath: process.execPath, args: [script] });
+    client
+      .registerModelProvider('company-model', () => ({}), {
+        model: 'model-1',
+        context_window_tokens: 4096,
+      })
+      .registerHostProvider('embedding', 'embedder', () => ({}), {
+        embedding_spaces: [
+          {
+            provider: 'embedder',
+            model: 'embed-1',
+            dimensions: 1536,
+            normalized: true,
+          },
+        ],
+      })
+      .onBeforeToolCall(() => ({ decision: 'continue' }), { registryId: 'hook-a' })
+      .onApproval(() => 'approve', { cancellation: true });
+
+    const result = await client.run('advertise capabilities');
+    expect(result.output).toEqual({
+      registrations: [
+        {
+          role: 'model',
+          registry_id: 'company-model',
+          capabilities: {
+            provider: 'company-model',
+            model: 'model-1',
+            semantic_actions: true,
+            structured_output: true,
+            multimodal_input: false,
+            context_window_tokens: 4096,
+            usage_reporting: true,
+          },
+          hooks: [],
+        },
+        {
+          role: 'embedding',
+          registry_id: 'embedder',
+          capabilities: {
+            embedding_spaces: [
+              {
+                provider: 'embedder',
+                model: 'embed-1',
+                dimensions: 1536,
+                normalized: true,
+              },
+            ],
+          },
+          hooks: [],
+        },
+        {
+          role: 'hook',
+          registry_id: 'hook-a',
+          capabilities: { hooks: ['before_tool_call'] },
+          hooks: ['before_tool_call'],
+        },
+        {
+          role: 'approval',
+          registry_id: 'controller',
+          capabilities: { approval: true, cancellation: true },
+          hooks: [],
+        },
+      ],
+    });
+    client.stop();
+  });
+
   it('flushes host registrations added after initialize before the next run', async () => {
     const script = makeFakeHarness(
       commonHarnessPrelude(`
@@ -308,6 +433,40 @@ describe('HarnessClient', () => {
     await expect(client.run('late hook')).resolves.toMatchObject({
       output: { registrations: ['sdk-hooks'] },
     });
+    client.stop();
+  });
+
+  it('stores inactive future-role host registration results', async () => {
+    const script = makeFakeHarness(
+      commonHarnessPrelude(`
+        rl.on('line', (line) => {
+          const frame = JSON.parse(line);
+          if (frame.method === 'initialize') {
+            write({ kind: 'response', id: frame.id, payload: { session: { protocol, version: 1 }, preflight: { status: 'ready' }, required_host_services: [] } });
+          } else if (frame.method === 'register_host_service') {
+            write({ kind: 'response', id: frame.id, payload: {
+              registered: true,
+              service: { role: frame.payload.role, registry_id: frame.payload.registry_id },
+              active: false,
+              reason: 'KnowledgeRuntime host dispatch is reserved until Milestone 12'
+            } });
+          }
+        });
+      `),
+    );
+    cleanup.push(resolve(script, '..'));
+    const client = new HarnessClient({ agentpmPath: process.execPath, args: [script] });
+
+    client.registerHostProvider('knowledge', 'kb', () => ({ ok: true }));
+    await client.initialize();
+
+    expect(client.hostServiceRegistration('knowledge', 'kb')).toMatchObject({
+      registered: true,
+      service: { role: 'knowledge', registry_id: 'kb' },
+      active: false,
+      reason: 'KnowledgeRuntime host dispatch is reserved until Milestone 12',
+    });
+    expect(client.hostServiceRegistrations()).toHaveLength(1);
     client.stop();
   });
 
