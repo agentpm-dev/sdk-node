@@ -141,7 +141,7 @@ Compatibility note:
 ### Run Harness over the machine protocol
 
 ```ts
-import { HarnessClient } from '@agentpm/sdk';
+import { HarnessClient, type BeforeToolCallHookHandler } from '@agentpm/sdk';
 
 const harness = new HarnessClient({
   agent: '@zack/support-agent@0.1.0',
@@ -157,10 +157,12 @@ harness.registerModelProvider('company-model', async ({ request }) => ({
   provider_metadata: { model: request.selection.model },
 }));
 
-harness.onBeforeToolCall(async (input) => ({
+const beforeToolCall: BeforeToolCallHookHandler = async (input) => ({
   decision: 'continue',
   patch: { arguments: input.arguments },
-}));
+});
+
+harness.onBeforeToolCall(beforeToolCall);
 
 harness.onApproval(async () => 'approve');
 
