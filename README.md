@@ -138,6 +138,46 @@ Compatibility note:
 - `reserved.profiles` is legacy pass-through metadata from older lockfile shapes. For current installs, treat `resolvedProfiles` as the authoritative Profile dependency list and expect `reserved.profiles` to usually be empty.
 - `manifest.loop` and `manifest.bindings` preserve the authored declarative metadata from the installed `agent.json`.
 
+### Run Harness over the machine protocol
+
+```ts
+import { HarnessClient, type BeforeToolCallHookHandler } from '@agentpm/sdk';
+
+const harness = new HarnessClient({
+  agent: '@zack/support-agent@0.1.0',
+  cwd: process.cwd(),
+});
+
+harness.registerModelProvider('company-model', async ({ request }) => ({
+  id: 'turn-1',
+  assistant_content: 'Handled by the host model.',
+  actions: [],
+  usage: {},
+  finish_reason: 'stop',
+  provider_metadata: { model: request.selection.model },
+}));
+
+const beforeToolCall: BeforeToolCallHookHandler = async (input) => ({
+  decision: 'continue',
+  patch: { arguments: input.arguments },
+});
+
+harness.onBeforeToolCall(beforeToolCall);
+
+harness.onApproval(async () => 'approve');
+
+const result = await harness.run('Use the configured agent.');
+await harness.shutdown();
+
+console.log(result);
+```
+
+`agent` is optional. When set, it is passed to `agentpm harness` as either an installed Agent package ref such as `@zack/support-agent@0.1.0` or a local manifest path such as `./agent.json`; when omitted, Harness uses its normal workspace discovery/default Agent selection. Register host services before starting a run. The SDK launches `agentpm harness --machine`, correlates request/response frames, streams Harness events, and routes host-service callbacks for model providers, hooks, and approvals.
+
+The convenience Hook helpers use contract-specific types. `onBeforeModelRequest` may return `context_sections` and `provider_options`, `onBeforeToolSelection` may return `candidate_ids`, and `onBeforeToolCall` may return replacement `arguments`. A returned object must include `decision: 'continue'` or `decision: 'reject'`; returning `undefined` is treated as an explicit continue with no patch.
+
+Host capability advertisement is role-specific. `registerModelProvider` automatically advertises the registry ID as `provider` plus semantic-action, structured-output, multimodal-input, and usage-reporting flags; pass model-specific overrides such as `model` or `context_window_tokens` when known. `registerHostProvider` accepts typed capability shapes for embedding, Knowledge, and Memory providers and sends exactly what you provide. `onApproval` advertises approval support and optional cancellation support. After initialization, `hostServiceRegistration(role, registryId)` exposes the Harness registration result; future runtime roles may return `active: false` with a reason until their Engine dispatch milestone is live.
+
 ### Load an installed skill package
 
 ```ts

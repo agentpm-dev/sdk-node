@@ -16,6 +16,8 @@ import { platform } from 'node:os';
 
 import semver from 'semver';
 
+export * from './harness';
+
 export type JsonPrimitive = string | number | boolean | null;
 
 // Recursive JSON value
