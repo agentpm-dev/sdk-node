@@ -719,7 +719,7 @@ export class HarnessClient {
       registryId,
       async ({ method, payload }) => {
         if (method !== 'generate') throw new Error(`Unsupported model method ${method}`);
-        return handler(payload);
+        return normalizeModelProviderResult(await handler(payload));
       },
       { capabilities: defaultModelCapabilities(registryId, capabilities) },
     );
@@ -1141,6 +1141,55 @@ function normalizeHostServiceRegistrationResult(
     active: typeof value.active === 'boolean' ? value.active : true,
     reason: typeof value.reason === 'string' || value.reason === null ? value.reason : undefined,
   };
+}
+
+function normalizeModelProviderResult(value: HarnessJsonValue): HarnessJsonValue {
+  if (!isJsonObject(value)) return value;
+  return {
+    ...value,
+    usage: normalizeRunUsage(value.usage),
+  };
+}
+
+function normalizeRunUsage(value: HarnessJsonValue | undefined): HarnessJsonValue {
+  const usage = isJsonObject(value) ? value : {};
+  return {
+    model_calls: numericUsageValue(usage.model_calls, 0),
+    tokens: normalizeTokenUsage(usage.tokens),
+    accepted_semantic_actions: numericUsageValue(usage.accepted_semantic_actions, 0),
+    tool_calls: numericUsageValue(usage.tool_calls, 0),
+    tool_retries: numericUsageValue(usage.tool_retries, 0),
+    knowledge_requests: numericUsageValue(usage.knowledge_requests, 0),
+    memory_requests: numericUsageValue(usage.memory_requests, 0),
+    embedding_requests: numericUsageValue(usage.embedding_requests, 0),
+    duration_ms: optionalNumericUsageValue(usage.duration_ms),
+    cost: normalizeCostUsage(usage.cost),
+  };
+}
+
+function normalizeTokenUsage(value: HarnessJsonValue | undefined): HarnessJsonValue {
+  const tokens = isJsonObject(value) ? value : {};
+  return {
+    input_tokens: optionalNumericUsageValue(tokens.input_tokens),
+    output_tokens: optionalNumericUsageValue(tokens.output_tokens),
+    total_tokens: optionalNumericUsageValue(tokens.total_tokens),
+  };
+}
+
+function normalizeCostUsage(value: HarnessJsonValue | undefined): HarnessJsonValue {
+  const cost = isJsonObject(value) ? value : {};
+  return {
+    amount: optionalNumericUsageValue(cost.amount),
+    currency: typeof cost.currency === 'string' ? cost.currency : null,
+  };
+}
+
+function numericUsageValue(value: HarnessJsonValue | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function optionalNumericUsageValue(value: HarnessJsonValue | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function isJsonObject(

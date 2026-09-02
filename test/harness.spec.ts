@@ -165,6 +165,7 @@ describe('HarnessClient', () => {
       commonHarnessPrelude(`
         let startRunId = null;
         let stage = 'model';
+        let modelUsage = null;
         rl.on('line', (line) => {
           const frame = JSON.parse(line);
           if (frame.method === 'initialize') {
@@ -175,13 +176,14 @@ describe('HarnessClient', () => {
             startRunId = frame.id;
             write({ kind: 'request', id: 'host-model-1', method: 'host_service', payload: { role: 'model', registry_id: 'company-model', method: 'generate', payload: { request: { phase_id: 'classify' } } } });
           } else if (frame.kind === 'response' && frame.id === 'host-model-1') {
+            modelUsage = frame.payload.usage;
             stage = 'hook';
             write({ kind: 'request', id: 'host-hook-1', method: 'host_service', payload: { role: 'hook', registry_id: 'sdk-hooks', method: 'before_tool_call', payload: { hook: 'before_tool_call', input: { arguments: { body: 'original' } } } } });
           } else if (frame.kind === 'response' && frame.id === 'host-hook-1') {
             stage = 'approval';
             write({ kind: 'request', id: 'host-approval-1', method: 'host_service', payload: { role: 'approval', registry_id: 'controller', method: 'request_approval', payload: { checkpoint: { id: 'gate' } } } });
           } else if (frame.kind === 'response' && frame.id === 'host-approval-1') {
-            write({ kind: 'response', id: startRunId, payload: { status: 'ended', output: { stage, approval: frame.payload.decision }, report: {} } });
+            write({ kind: 'response', id: startRunId, payload: { status: 'ended', output: { stage, approval: frame.payload.decision, modelUsage }, report: {} } });
           }
         });
       `),
@@ -212,7 +214,29 @@ describe('HarnessClient', () => {
     const result = await client.run('use host services');
     expect(result).toMatchObject({
       status: 'ended',
-      output: { stage: 'approval', approval: 'approve' },
+      output: {
+        stage: 'approval',
+        approval: 'approve',
+        modelUsage: {
+          model_calls: 0,
+          tokens: {
+            input_tokens: null,
+            output_tokens: null,
+            total_tokens: null,
+          },
+          accepted_semantic_actions: 0,
+          tool_calls: 0,
+          tool_retries: 0,
+          knowledge_requests: 0,
+          memory_requests: 0,
+          embedding_requests: 0,
+          duration_ms: null,
+          cost: {
+            amount: null,
+            currency: null,
+          },
+        },
+      },
     });
     expect(hostCalls).toHaveLength(3);
     client.stop();
@@ -755,9 +779,8 @@ describe('HarnessClient', () => {
                   action: {
                     type: 'knowledge_request',
                     package: realHarnessKnowledgePackage,
-                    mode: 'vector_query',
-                    query: 'real CLI SDK Knowledge query',
-                    top_k: 1,
+                    mode: 'context_document',
+                    document: 'knowledge/docs/overview.md',
                     return_citations: true,
                   },
                 },
@@ -778,11 +801,23 @@ describe('HarnessClient', () => {
               provider_metadata: {},
             };
           }
+          const outcome = modelCalls === 2 ? 'answer' : 'complete';
           return {
-            assistant_content: 'real CLI SDK host model response',
-            actions: [],
+            assistant_content: null,
+            actions: [
+              {
+                id: 'sdk-real-cli-complete',
+                action: {
+                  type: 'phase_completion',
+                  outcome,
+                  output: {
+                    message: 'real CLI SDK host model response',
+                  },
+                },
+              },
+            ],
             usage: {},
-            finish_reason: 'stop',
+            finish_reason: 'tool_calls',
             provider_metadata: {},
           };
         })
