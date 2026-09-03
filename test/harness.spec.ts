@@ -1,14 +1,41 @@
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { HarnessClient, HarnessProtocolError } from '../src';
+import {
+  HarnessClient,
+  HarnessProtocolError,
+  serveKnowledgeRuntimeProcess,
+  type AfterKnowledgeRetrievalHookHandler,
+  type BeforeKnowledgeRequestHookHandler,
+  type BeforeMemoryOperationHookHandler,
+  type BeforeMemoryReadHookHandler,
+  type BeforeMemoryWriteHookHandler,
+  type KnowledgeProviderCapabilities,
+  type KnowledgeRuntimeRequest,
+} from '../src';
 
 const protocol = 'agentpm-harness-machine';
 const realHarnessCli = process.env.AGENTPM_HARNESS_CLI;
 const realHarnessWorkspace = process.env.AGENTPM_HARNESS_WORKSPACE;
+const realHarnessEmbeddingProvider = process.env.AGENTPM_HARNESS_EMBEDDING_PROVIDER ?? 'embedder';
+const realHarnessEmbeddingSpaceProvider =
+  process.env.AGENTPM_HARNESS_EMBEDDING_SPACE_PROVIDER ?? 'openai';
+const realHarnessEmbeddingSpaceModel =
+  process.env.AGENTPM_HARNESS_EMBEDDING_SPACE_MODEL ?? 'text-embedding-3-small';
+const realHarnessEmbeddingDimensions = Number(
+  process.env.AGENTPM_HARNESS_EMBEDDING_DIMENSIONS ?? '3',
+);
+const realHarnessEmbeddingNormalized = process.env.AGENTPM_HARNESS_EMBEDDING_NORMALIZED !== 'false';
+const realHarnessKnowledgeRuntime = process.env.AGENTPM_HARNESS_KNOWLEDGE_RUNTIME ?? 'kb';
+const realHarnessKnowledgePackage = process.env.AGENTPM_HARNESS_KNOWLEDGE_PACKAGE ?? '@zack/docs';
+const realHarnessKnowledgeVersion = process.env.AGENTPM_HARNESS_KNOWLEDGE_VERSION ?? '0.1.0';
+const realHarnessKnowledgeCorpus = process.env.AGENTPM_HARNESS_KNOWLEDGE_CORPUS;
+const realHarnessEmbeddingKnowledgePackage =
+  process.env.AGENTPM_HARNESS_EMBEDDING_KNOWLEDGE_PACKAGE ?? '@zack/local-vector';
 const hasRealHarnessFixture =
   !!realHarnessCli &&
   !!realHarnessWorkspace &&
@@ -141,6 +168,7 @@ describe('HarnessClient', () => {
       commonHarnessPrelude(`
         let startRunId = null;
         let stage = 'model';
+        let modelUsage = null;
         rl.on('line', (line) => {
           const frame = JSON.parse(line);
           if (frame.method === 'initialize') {
@@ -151,13 +179,14 @@ describe('HarnessClient', () => {
             startRunId = frame.id;
             write({ kind: 'request', id: 'host-model-1', method: 'host_service', payload: { role: 'model', registry_id: 'company-model', method: 'generate', payload: { request: { phase_id: 'classify' } } } });
           } else if (frame.kind === 'response' && frame.id === 'host-model-1') {
+            modelUsage = frame.payload.usage;
             stage = 'hook';
             write({ kind: 'request', id: 'host-hook-1', method: 'host_service', payload: { role: 'hook', registry_id: 'sdk-hooks', method: 'before_tool_call', payload: { hook: 'before_tool_call', input: { arguments: { body: 'original' } } } } });
           } else if (frame.kind === 'response' && frame.id === 'host-hook-1') {
             stage = 'approval';
             write({ kind: 'request', id: 'host-approval-1', method: 'host_service', payload: { role: 'approval', registry_id: 'controller', method: 'request_approval', payload: { checkpoint: { id: 'gate' } } } });
           } else if (frame.kind === 'response' && frame.id === 'host-approval-1') {
-            write({ kind: 'response', id: startRunId, payload: { status: 'ended', output: { stage, approval: frame.payload.decision }, report: {} } });
+            write({ kind: 'response', id: startRunId, payload: { status: 'ended', output: { stage, approval: frame.payload.decision, modelUsage }, report: {} } });
           }
         });
       `),
@@ -188,7 +217,29 @@ describe('HarnessClient', () => {
     const result = await client.run('use host services');
     expect(result).toMatchObject({
       status: 'ended',
-      output: { stage: 'approval', approval: 'approve' },
+      output: {
+        stage: 'approval',
+        approval: 'approve',
+        modelUsage: {
+          model_calls: 0,
+          tokens: {
+            input_tokens: null,
+            output_tokens: null,
+            total_tokens: null,
+          },
+          accepted_semantic_actions: 0,
+          tool_calls: 0,
+          tool_retries: 0,
+          knowledge_requests: 0,
+          memory_requests: 0,
+          embedding_requests: 0,
+          duration_ms: null,
+          cost: {
+            amount: null,
+            currency: null,
+          },
+        },
+      },
     });
     expect(hostCalls).toHaveLength(3);
     client.stop();
@@ -294,9 +345,37 @@ describe('HarnessClient', () => {
     );
     cleanup.push(resolve(script, '..'));
     const client = new HarnessClient({ agentpmPath: process.execPath, args: [script] });
+    const beforeKnowledgeRequest: BeforeKnowledgeRequestHookHandler = () => ({
+      decision: 'continue',
+      patch: { query: 'narrowed', top_k: 2 },
+    });
+    const afterKnowledgeRetrieval: AfterKnowledgeRetrievalHookHandler = () => ({
+      decision: 'continue',
+      patch: {
+        results: [{ source_id: 'src_1', chunk_id: 'chunk_1', text: 'model-visible text' }],
+      },
+    });
+    const beforeMemoryRead: BeforeMemoryReadHookHandler = () => ({
+      decision: 'continue',
+      patch: { limit: 1 },
+    });
+    const beforeMemoryWrite: BeforeMemoryWriteHookHandler = (input) => ({
+      decision: 'continue',
+      patch: { content: input.content },
+    });
+    const beforeMemoryOperation: BeforeMemoryOperationHookHandler = () => ({
+      decision: 'continue',
+      patch: { model_guidance: 'Prefer recent records.' },
+    });
+
     client
       .onBeforeToolCall(() => ({ decision: 'continue' }), { registryId: 'a' })
-      .onBeforeModelRequest(() => ({ decision: 'continue' }), { registryId: 'b' });
+      .onBeforeModelRequest(() => ({ decision: 'continue' }), { registryId: 'b' })
+      .onBeforeKnowledgeRequest(beforeKnowledgeRequest, { registryId: 'c' })
+      .onAfterKnowledgeRetrieval(afterKnowledgeRetrieval, { registryId: 'd' })
+      .onBeforeMemoryRead(beforeMemoryRead, { registryId: 'e' })
+      .onBeforeMemoryWrite(beforeMemoryWrite, { registryId: 'f' })
+      .onBeforeMemoryOperation(beforeMemoryOperation, { registryId: 'g' });
 
     const result = await client.run('advertise hooks');
     expect(result.output).toEqual({
@@ -310,6 +389,31 @@ describe('HarnessClient', () => {
           registry_id: 'b',
           hooks: ['before_model_request'],
           capabilities: { hooks: ['before_model_request'] },
+        },
+        {
+          registry_id: 'c',
+          hooks: ['before_knowledge_request'],
+          capabilities: { hooks: ['before_knowledge_request'] },
+        },
+        {
+          registry_id: 'd',
+          hooks: ['after_knowledge_retrieval'],
+          capabilities: { hooks: ['after_knowledge_retrieval'] },
+        },
+        {
+          registry_id: 'e',
+          hooks: ['before_memory_read'],
+          capabilities: { hooks: ['before_memory_read'] },
+        },
+        {
+          registry_id: 'f',
+          hooks: ['before_memory_write'],
+          capabilities: { hooks: ['before_memory_write'] },
+        },
+        {
+          registry_id: 'g',
+          hooks: ['before_memory_operation'],
+          capabilities: { hooks: ['before_memory_operation'] },
         },
       ],
     });
@@ -407,6 +511,127 @@ describe('HarnessClient', () => {
     client.stop();
   });
 
+  it('registers typed embedding and Knowledge providers and dispatches host requests', async () => {
+    const script = makeFakeHarness(
+      commonHarnessPrelude(`
+        const registrations = [];
+        let startRunId = null;
+        rl.on('line', (line) => {
+          const frame = JSON.parse(line);
+          if (frame.method === 'initialize') {
+            write({ kind: 'response', id: frame.id, payload: { session: { protocol, version: 1 }, preflight: { status: 'ready' }, required_host_services: [] } });
+          } else if (frame.method === 'register_host_service') {
+            registrations.push({
+              role: frame.payload.role,
+              registry_id: frame.payload.registry_id,
+              capabilities: frame.payload.capabilities,
+            });
+            write({ kind: 'response', id: frame.id, payload: {
+              registered: true,
+              service: { role: frame.payload.role, registry_id: frame.payload.registry_id },
+              active: true
+            } });
+          } else if (frame.method === 'start_run') {
+            startRunId = frame.id;
+            write({ kind: 'request', id: 'embed-1', method: 'host_service', payload: {
+              role: 'embedding',
+              registry_id: 'embedder',
+              method: 'embed',
+              payload: { provider: 'openai', model: 'text-embedding-3-small', dimensions: 3, normalized: true, text: 'hello' }
+            } });
+          } else if (frame.kind === 'response' && frame.id === 'embed-1') {
+            write({ kind: 'request', id: 'knowledge-1', method: 'host_service', payload: {
+              role: 'knowledge',
+              registry_id: 'kb',
+              method: 'retrieve',
+              payload: { request: { package: '@zack/docs', version: '0.1.0', mode: 'vector_query', query: 'hello', top_k: 1, return_citations: true } }
+            } });
+          } else if (frame.kind === 'response' && frame.id === 'knowledge-1') {
+            write({ kind: 'response', id: startRunId, payload: {
+              status: 'ended',
+              output: { registrations, knowledge: frame.payload },
+              report: {}
+            } });
+          }
+        });
+      `),
+    );
+    cleanup.push(resolve(script, '..'));
+    const client = new HarnessClient({ agentpmPath: process.execPath, args: [script] });
+    const calls: string[] = [];
+
+    client
+      .registerEmbeddingProvider(
+        'embedder',
+        (request) => {
+          calls.push(`embedding:${request.provider}:${request.model}:${request.text}`);
+          return {
+            vector: [1, 0, 0],
+            provider: request.provider,
+            model: request.model,
+            dimensions: 3,
+          };
+        },
+        {
+          embedding_spaces: [
+            {
+              provider: 'openai',
+              model: 'text-embedding-3-small',
+              dimensions: 3,
+              normalized: true,
+            },
+          ],
+        },
+      )
+      .registerKnowledgeRuntime(
+        'kb',
+        (request: KnowledgeRuntimeRequest) => {
+          calls.push(`knowledge:${request.package}:${request.mode}:${request.query}`);
+          return {
+            ok: true,
+            package: request.package,
+            version: request.version,
+            mode: request.mode,
+            query: request.query,
+            results: [
+              {
+                rank: 1,
+                score: 0.9,
+                chunk_id: 'chunk-1',
+                source_id: 'source-1',
+                text: 'answer',
+              },
+            ],
+          };
+        },
+        {
+          modes: ['vector_query'],
+          features: ['citations'],
+          packages: [{ package: '@zack/docs', version: '0.1.0', ready: true }],
+        },
+      );
+
+    const result = await client.run('use typed knowledge providers');
+    expect(calls).toEqual([
+      'embedding:openai:text-embedding-3-small:hello',
+      'knowledge:@zack/docs:vector_query:hello',
+    ]);
+    expect(result.output).toMatchObject({
+      registrations: [
+        { role: 'embedding', registry_id: 'embedder' },
+        { role: 'knowledge', registry_id: 'kb' },
+      ],
+      knowledge: {
+        ok: true,
+        package: '@zack/docs',
+        mode: 'vector_query',
+      },
+    });
+    expect(client.hostServiceRegistration('embedding', 'embedder')).toMatchObject({ active: true });
+    expect(client.hostServiceRegistration('knowledge', 'kb')).toMatchObject({ active: true });
+    client.stop();
+  });
+
   it('flushes host registrations added after initialize before the next run', async () => {
     const script = makeFakeHarness(
       commonHarnessPrelude(`
@@ -436,7 +661,7 @@ describe('HarnessClient', () => {
     client.stop();
   });
 
-  it('stores inactive future-role host registration results', async () => {
+  it('stores inactive host registration results with Harness-provided reasons', async () => {
     const script = makeFakeHarness(
       commonHarnessPrelude(`
         rl.on('line', (line) => {
@@ -448,7 +673,7 @@ describe('HarnessClient', () => {
               registered: true,
               service: { role: frame.payload.role, registry_id: frame.payload.registry_id },
               active: false,
-              reason: 'KnowledgeRuntime host dispatch is reserved until Milestone 12'
+              reason: 'configured KnowledgeRuntime could not attest the requested package'
             } });
           }
         });
@@ -464,7 +689,7 @@ describe('HarnessClient', () => {
       registered: true,
       service: { role: 'knowledge', registry_id: 'kb' },
       active: false,
-      reason: 'KnowledgeRuntime host dispatch is reserved until Milestone 12',
+      reason: 'configured KnowledgeRuntime could not attest the requested package',
     });
     expect(client.hostServiceRegistrations()).toHaveLength(1);
     client.stop();
@@ -535,22 +760,67 @@ describe('HarnessClient', () => {
   });
 
   it.skipIf(!hasRealHarnessFixture)(
-    'runs a real agentpm harness process with host model, Hook, approval, and report',
+    'runs a real agentpm harness process with host model, embedding, Knowledge, Hook, approval, and report',
     async () => {
       const client = new HarnessClient({
         agentpmPath: realHarnessCli,
         cwd: realHarnessWorkspace,
       });
       const calls: string[] = [];
+      let modelCalls = 0;
 
       client
         .registerModelProvider('company-model', () => {
           calls.push('model');
+          modelCalls += 1;
+          if (modelCalls === 1) {
+            return {
+              assistant_content: null,
+              actions: [
+                {
+                  id: 'sdk-real-cli-knowledge',
+                  action: {
+                    type: 'knowledge_request',
+                    package: realHarnessKnowledgePackage,
+                    mode: 'context_document',
+                    document: 'knowledge/docs/overview.md',
+                    return_citations: true,
+                  },
+                },
+                {
+                  id: 'sdk-real-cli-embedding',
+                  action: {
+                    type: 'knowledge_request',
+                    package: realHarnessEmbeddingKnowledgePackage,
+                    mode: 'vector_query',
+                    query: 'real CLI SDK embedding query',
+                    top_k: 1,
+                    return_citations: true,
+                  },
+                },
+              ],
+              usage: {},
+              finish_reason: 'tool_calls',
+              provider_metadata: {},
+            };
+          }
+          const outcome = modelCalls === 2 ? 'answer' : 'complete';
           return {
-            assistant_content: 'real CLI SDK host model response',
-            actions: [],
+            assistant_content: null,
+            actions: [
+              {
+                id: 'sdk-real-cli-complete',
+                action: {
+                  type: 'phase_completion',
+                  outcome,
+                  output: {
+                    message: 'real CLI SDK host model response',
+                  },
+                },
+              },
+            ],
             usage: {},
-            finish_reason: 'stop',
+            finish_reason: 'tool_calls',
             provider_metadata: {},
           };
         })
@@ -569,13 +839,296 @@ describe('HarnessClient', () => {
 
       const info = await client.initialize();
       expect(info.session).toMatchObject({ protocol, version: 1 });
+      expect(info.required_host_services ?? []).toEqual(
+        expect.arrayContaining([
+          { role: 'embedding', registry_id: realHarnessEmbeddingProvider },
+          { role: 'knowledge', registry_id: realHarnessKnowledgeRuntime },
+        ]),
+      );
+
+      client
+        .registerEmbeddingProvider(
+          realHarnessEmbeddingProvider,
+          (request) => {
+            calls.push(`embedding:${request.provider}:${request.model}:${request.text}`);
+            return {
+              vector: Array.from({ length: request.dimensions }, (_, index) =>
+                index === 0 ? 1 : 0,
+              ),
+              provider: request.provider,
+              model: request.model,
+              dimensions: request.dimensions,
+              normalized: request.normalized,
+            };
+          },
+          {
+            embedding_spaces: [
+              {
+                provider: realHarnessEmbeddingSpaceProvider,
+                model: realHarnessEmbeddingSpaceModel,
+                dimensions: realHarnessEmbeddingDimensions,
+                normalized: realHarnessEmbeddingNormalized,
+              },
+            ],
+          },
+        )
+        .registerKnowledgeRuntime(
+          realHarnessKnowledgeRuntime,
+          (request: KnowledgeRuntimeRequest) => {
+            calls.push(`knowledge:${request.package}:${request.mode}:${request.query ?? ''}`);
+            return {
+              ok: true,
+              package: request.package,
+              version: request.version,
+              mode: request.mode,
+              document: request.document,
+              query: request.query,
+              content: request.document ? 'real CLI SDK host Knowledge document' : undefined,
+              results: request.query
+                ? [
+                    {
+                      rank: 1,
+                      score: 1,
+                      chunk_id: 'sdk-real-cli-chunk',
+                      source_id: 'sdk-real-cli-source',
+                      text: 'real CLI SDK host Knowledge result',
+                    },
+                  ]
+                : [],
+              citations: request.return_citations
+                ? [{ chunk_id: 'sdk-real-cli-chunk', source_id: 'sdk-real-cli-source' }]
+                : [],
+            };
+          },
+          {
+            modes: ['context_document', 'vector_query'],
+            features: ['citations'],
+            packages: [
+              {
+                package: realHarnessKnowledgePackage,
+                version: realHarnessKnowledgeVersion,
+                ready: true,
+                ...(realHarnessKnowledgeCorpus ? { corpus: realHarnessKnowledgeCorpus } : {}),
+              },
+            ],
+          },
+        );
+
       const result = await client.run('Run the SDK real CLI integration fixture.');
       expect(result.status).toBe('ended');
       expect(result.output).toBeDefined();
       expect(result.report).toBeDefined();
       expect(calls).toContain('model');
       expect(calls).toContain('before_model_request');
+      expect(calls.some((call) => call.startsWith('knowledge:'))).toBe(true);
+      expect(calls.some((call) => call.startsWith('embedding:'))).toBe(true);
+      expect(
+        client.hostServiceRegistration('embedding', realHarnessEmbeddingProvider),
+      ).toMatchObject({
+        active: true,
+      });
+      expect(
+        client.hostServiceRegistration('knowledge', realHarnessKnowledgeRuntime),
+      ).toMatchObject({
+        active: true,
+      });
       await client.shutdown();
     },
   );
+});
+
+describe('serveKnowledgeRuntimeProcess', () => {
+  function collectOutput(): { stream: Writable; lines: () => unknown[] } {
+    let output = '';
+    return {
+      stream: new Writable({
+        write(chunk, _encoding, callback) {
+          output += chunk.toString();
+          callback();
+        },
+      }),
+      lines: () =>
+        output
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as unknown),
+    };
+  }
+
+  const capabilities: KnowledgeProviderCapabilities = {
+    modes: ['vector_query'],
+    features: ['citations'],
+    packages: [
+      {
+        package: '@zack/m13-reference-corpus',
+        version: '0.1.0',
+        corpus: 'sha256:corpus',
+        ready: true,
+      },
+    ],
+  };
+
+  it('serves initialize and retrieve over agentpm-service JSONL', async () => {
+    const input = new PassThrough();
+    const output = collectOutput();
+    const calls: KnowledgeRuntimeRequest[] = [];
+    const served = serveKnowledgeRuntimeProcess(
+      'pinecone-reference',
+      async (request) => {
+        calls.push(request);
+        return {
+          ok: true,
+          package: request.package,
+          version: request.version,
+          mode: request.mode,
+          query: request.query,
+          results: [
+            {
+              rank: 1,
+              score: 0.98,
+              chunk_id: 'chunk-alpha',
+              source_id: 'source-alpha',
+              text: 'alpha result',
+            },
+          ],
+          citations: [{ chunk_id: 'chunk-alpha', source_id: 'source-alpha' }],
+        };
+      },
+      capabilities,
+      { input, output: output.stream },
+    );
+
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'initialize',
+        id: 'init-1',
+        service: 'knowledge',
+        method: 'initialize',
+        payload: { role: 'knowledge', registry_id: 'pinecone-reference' },
+      })}\n`,
+    );
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'request',
+        id: 'req-1',
+        service: 'knowledge',
+        method: 'retrieve',
+        payload: {
+          request: {
+            package: '@zack/m13-reference-corpus',
+            version: '0.1.0',
+            mode: 'vector_query',
+            query: 'launch checklist',
+            top_k: 1,
+            return_citations: true,
+          },
+        },
+      })}\n`,
+    );
+    input.end();
+
+    await served;
+
+    expect(calls).toEqual([
+      {
+        package: '@zack/m13-reference-corpus',
+        version: '0.1.0',
+        mode: 'vector_query',
+        query: 'launch checklist',
+        top_k: 1,
+        return_citations: true,
+      },
+    ]);
+    expect(output.lines()).toEqual([
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'initialized',
+        id: 'init-1',
+        service: 'knowledge',
+        result: {
+          ...capabilities,
+          registry_id: 'pinecone-reference',
+          ready: true,
+        },
+      },
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'response',
+        id: 'req-1',
+        service: 'knowledge',
+        result: {
+          ok: true,
+          package: '@zack/m13-reference-corpus',
+          version: '0.1.0',
+          mode: 'vector_query',
+          query: 'launch checklist',
+          results: [
+            {
+              rank: 1,
+              score: 0.98,
+              chunk_id: 'chunk-alpha',
+              source_id: 'source-alpha',
+              text: 'alpha result',
+            },
+          ],
+          citations: [{ chunk_id: 'chunk-alpha', source_id: 'source-alpha' }],
+        },
+      },
+    ]);
+  });
+
+  it('returns service error frames for handler failures', async () => {
+    const input = new PassThrough();
+    const output = collectOutput();
+    const served = serveKnowledgeRuntimeProcess(
+      'pgvector-reference',
+      () => {
+        throw new Error('backend unavailable');
+      },
+      capabilities,
+      { input, output: output.stream },
+    );
+
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'request',
+        id: 'req-err',
+        service: 'knowledge',
+        method: 'retrieve',
+        payload: {
+          package: '@zack/m13-reference-corpus',
+          version: '0.1.0',
+          mode: 'vector_query',
+          query: 'launch checklist',
+        },
+      })}\n`,
+    );
+    input.end();
+
+    await served;
+
+    expect(output.lines()).toEqual([
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'error',
+        id: 'req-err',
+        service: 'knowledge',
+        error: {
+          code: 'knowledge_runtime_error',
+          message: 'backend unavailable',
+          retryable: false,
+        },
+      },
+    ]);
+  });
 });

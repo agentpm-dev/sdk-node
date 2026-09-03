@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { createInterface } from 'node:readline';
 
 export type HarnessJsonPrimitive = string | number | boolean | null;
 export type HarnessJsonValue =
@@ -122,7 +123,7 @@ export type ModelProviderCapabilityOverrides = Partial<ModelProviderCapabilities
   Record<string, HarnessJsonValue | undefined>;
 
 export type EmbeddingSpaceCapability = {
-  provider?: string;
+  provider: string;
   model: string;
   dimensions: number;
   normalized: boolean;
@@ -134,14 +135,14 @@ export type EmbeddingProviderCapabilities = {
 
 export type KnowledgePackageRealization = {
   package: string;
-  version?: string;
+  version: string;
   corpus?: string;
   ready: boolean;
 };
 
 export type KnowledgeProviderCapabilities = {
-  modes?: string[];
-  features?: string[];
+  modes: string[];
+  features: string[];
   packages?: KnowledgePackageRealization[];
 };
 
@@ -274,6 +275,110 @@ export type BeforeToolCallDecision = HookDecision<BeforeToolCallPatch>;
 
 export type BeforeToolCallHookHandler = HookHandler<BeforeToolCallInput, BeforeToolCallPatch>;
 
+export type BeforeKnowledgeRequestInput = {
+  phase_id: string;
+  request: KnowledgeRuntimeRequest;
+};
+
+export type BeforeKnowledgeRequestPatch = {
+  document?: string;
+  query?: string;
+  top_k?: number;
+  score_threshold?: number;
+  return_citations?: boolean;
+};
+
+export type BeforeKnowledgeRequestDecision = HookDecision<BeforeKnowledgeRequestPatch>;
+
+export type BeforeKnowledgeRequestHookHandler = HookHandler<
+  BeforeKnowledgeRequestInput,
+  BeforeKnowledgeRequestPatch
+>;
+
+export type AfterKnowledgeRetrievalInput = {
+  phase_id: string;
+  result: KnowledgeRuntimeResult;
+};
+
+export type AfterKnowledgeRetrievalResultPatch = {
+  chunk_id: string;
+  source_id: string;
+  text?: string;
+};
+
+export type AfterKnowledgeRetrievalPatch = {
+  content?: string;
+  results?: AfterKnowledgeRetrievalResultPatch[];
+};
+
+export type AfterKnowledgeRetrievalDecision = HookDecision<AfterKnowledgeRetrievalPatch>;
+
+export type AfterKnowledgeRetrievalHookHandler = HookHandler<
+  AfterKnowledgeRetrievalInput,
+  AfterKnowledgeRetrievalPatch
+>;
+
+export type BeforeMemoryReadInput = {
+  phase_id: string;
+  package: string;
+  space: string;
+  scope: HarnessJsonValue;
+  query?: string;
+  filter?: HarnessJsonValue;
+  limit?: number;
+  mode?: string;
+};
+
+export type BeforeMemoryReadPatch = {
+  query?: string;
+  filter?: HarnessJsonValue;
+  limit?: number;
+  mode?: string;
+};
+
+export type BeforeMemoryReadDecision = HookDecision<BeforeMemoryReadPatch>;
+
+export type BeforeMemoryReadHookHandler = HookHandler<BeforeMemoryReadInput, BeforeMemoryReadPatch>;
+
+export type BeforeMemoryWriteInput = {
+  phase_id: string;
+  package: string;
+  space: string;
+  record_type: string;
+  scope: HarnessJsonValue;
+  content: HarnessJsonValue;
+};
+
+export type BeforeMemoryWritePatch = {
+  content?: HarnessJsonValue;
+};
+
+export type BeforeMemoryWriteDecision = HookDecision<BeforeMemoryWritePatch>;
+
+export type BeforeMemoryWriteHookHandler = HookHandler<
+  BeforeMemoryWriteInput,
+  BeforeMemoryWritePatch
+>;
+
+export type BeforeMemoryOperationInput = {
+  phase_id: string;
+  package: string;
+  operation: string;
+  scope: HarnessJsonValue;
+  source_summary: HarnessJsonValue;
+};
+
+export type BeforeMemoryOperationPatch = {
+  model_guidance?: string;
+};
+
+export type BeforeMemoryOperationDecision = HookDecision<BeforeMemoryOperationPatch>;
+
+export type BeforeMemoryOperationHookHandler = HookHandler<
+  BeforeMemoryOperationInput,
+  BeforeMemoryOperationPatch
+>;
+
 export type GenericHookDecision = HookDecision;
 
 export type GenericHookHandler<TInput = HarnessJsonValue> = HookHandler<TInput>;
@@ -293,6 +398,85 @@ export type ModelProviderHandler = (
   payload: HarnessJsonValue,
 ) => HarnessJsonValue | Promise<HarnessJsonValue>;
 
+export type EmbeddingProviderRequest = {
+  provider: string;
+  model: string;
+  dimensions: number;
+  normalized: boolean;
+  text: string;
+};
+
+export type EmbeddingProviderResult =
+  | number[]
+  | {
+      vector?: number[];
+      values?: number[];
+      provider?: string;
+      model?: string;
+      dimensions?: number;
+      normalized?: boolean;
+      [key: string]: HarnessJsonValue | undefined;
+    };
+
+export type EmbeddingProviderHandler = (
+  request: EmbeddingProviderRequest,
+) => EmbeddingProviderResult | Promise<EmbeddingProviderResult>;
+
+export type KnowledgeRequestMode = 'context_document' | 'vector_query';
+
+export type KnowledgeRuntimeRequest = {
+  package: string;
+  version: string;
+  mode: KnowledgeRequestMode;
+  document?: string;
+  query?: string;
+  top_k?: number;
+  score_threshold?: number;
+  return_citations?: boolean;
+};
+
+export type KnowledgeRuntimeFailure = {
+  code: string;
+  message: string;
+  retryable?: boolean;
+};
+
+export type KnowledgeRetrievalResult = {
+  rank: number;
+  score: number;
+  chunk_id: string;
+  source_id: string;
+  source_title?: string;
+  source_uri?: string;
+  text?: string;
+  chunk_metadata?: HarnessJsonValue;
+  source_metadata?: HarnessJsonValue;
+};
+
+export type KnowledgeCitation = {
+  chunk_id: string;
+  source_id: string;
+  title?: string;
+  uri?: string;
+};
+
+export type KnowledgeRuntimeResult = {
+  ok: boolean;
+  package: string;
+  version: string;
+  mode: KnowledgeRequestMode;
+  document?: string;
+  query?: string;
+  content?: string;
+  results?: KnowledgeRetrievalResult[];
+  citations?: KnowledgeCitation[];
+  error?: KnowledgeRuntimeFailure;
+};
+
+export type KnowledgeRuntimeHandler = (
+  request: KnowledgeRuntimeRequest,
+) => KnowledgeRuntimeResult | Promise<KnowledgeRuntimeResult>;
+
 type PendingRequest = {
   resolve: (value: HarnessJsonValue) => void;
   reject: (error: Error) => void;
@@ -310,7 +494,41 @@ type RegisteredService = {
 
 const PROTOCOL = 'agentpm-harness-machine' as const;
 const VERSION = 1 as const;
+const SERVICE_PROTOCOL = 'agentpm-service' as const;
+const SERVICE_VERSION = 1 as const;
 const DEFAULT_HOOK_REGISTRY_ID = 'sdk-hooks';
+
+export type AgentpmServiceFrameKind =
+  | 'initialize'
+  | 'initialized'
+  | 'request'
+  | 'response'
+  | 'event'
+  | 'error';
+
+export type AgentpmServiceError = {
+  code: string;
+  message: string;
+  retryable?: boolean;
+};
+
+export type AgentpmServiceEnvelope = {
+  protocol: typeof SERVICE_PROTOCOL;
+  version: typeof SERVICE_VERSION;
+  kind: AgentpmServiceFrameKind;
+  id?: string;
+  service: HarnessServiceRole | string;
+  method?: string;
+  payload?: HarnessJsonValue;
+  result?: HarnessJsonValue;
+  error?: AgentpmServiceError;
+};
+
+export type KnowledgeRuntimeProcessOptions = {
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+  ready?: boolean;
+};
 
 export class HarnessProtocolError extends Error {
   readonly code: string;
@@ -319,6 +537,94 @@ export class HarnessProtocolError extends Error {
     super(error.message);
     this.name = 'HarnessProtocolError';
     this.code = error.code;
+  }
+}
+
+export async function serveKnowledgeRuntimeProcess(
+  registryId: string,
+  handler: KnowledgeRuntimeHandler,
+  capabilities: KnowledgeProviderCapabilities,
+  options: KnowledgeRuntimeProcessOptions = {},
+): Promise<void> {
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const ready = options.ready ?? true;
+  const lines = createInterface({ input });
+
+  const write = (frame: Omit<AgentpmServiceEnvelope, 'protocol' | 'version'>): void => {
+    output.write(
+      `${JSON.stringify({
+        protocol: SERVICE_PROTOCOL,
+        version: SERVICE_VERSION,
+        ...frame,
+      })}\n`,
+    );
+  };
+
+  const writeError = (
+    request: Partial<AgentpmServiceEnvelope>,
+    code: string,
+    error: unknown,
+  ): void => {
+    write({
+      kind: 'error',
+      id: request.id,
+      service: request.service ?? 'knowledge',
+      error: {
+        code,
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    });
+  };
+
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    let frame: Partial<AgentpmServiceEnvelope> = { service: 'knowledge' };
+    try {
+      frame = JSON.parse(line) as Partial<AgentpmServiceEnvelope>;
+      if (frame.protocol !== SERVICE_PROTOCOL) {
+        throw new Error(`unsupported service protocol ${String(frame.protocol)}`);
+      }
+      if (frame.version !== SERVICE_VERSION) {
+        throw new Error(`unsupported service protocol version ${String(frame.version)}`);
+      }
+      if (frame.service !== 'knowledge') {
+        throw new Error(`unsupported service ${String(frame.service)}`);
+      }
+
+      if (frame.kind === 'initialize') {
+        write({
+          kind: 'initialized',
+          id: frame.id,
+          service: 'knowledge',
+          result: {
+            ...capabilities,
+            registry_id: registryId,
+            ready,
+          },
+        });
+        continue;
+      }
+
+      if (frame.kind !== 'request') {
+        throw new Error(`unsupported service frame kind ${String(frame.kind)}`);
+      }
+      if (frame.method !== 'retrieve') {
+        throw new Error(`Unsupported KnowledgeRuntime method ${String(frame.method)}`);
+      }
+
+      write({
+        kind: 'response',
+        id: frame.id,
+        service: 'knowledge',
+        result: (await handler(
+          extractKnowledgeRuntimeRequest(frame.payload ?? null),
+        )) as HarnessJsonValue,
+      });
+    } catch (error: unknown) {
+      writeError(frame, 'knowledge_runtime_error', error);
+    }
   }
 }
 
@@ -536,9 +842,41 @@ export class HarnessClient {
       registryId,
       async ({ method, payload }) => {
         if (method !== 'generate') throw new Error(`Unsupported model method ${method}`);
-        return handler(payload);
+        return normalizeModelProviderResult(await handler(payload));
       },
       { capabilities: defaultModelCapabilities(registryId, capabilities) },
+    );
+  }
+
+  registerEmbeddingProvider(
+    registryId: string,
+    handler: EmbeddingProviderHandler,
+    capabilities: EmbeddingProviderCapabilities,
+  ): this {
+    return this.registerHostService(
+      'embedding',
+      registryId,
+      async ({ method, payload }) => {
+        if (method !== 'embed') throw new Error(`Unsupported embedding method ${method}`);
+        return (await handler(payload as EmbeddingProviderRequest)) as HarnessJsonValue;
+      },
+      { capabilities },
+    );
+  }
+
+  registerKnowledgeRuntime(
+    registryId: string,
+    handler: KnowledgeRuntimeHandler,
+    capabilities: KnowledgeProviderCapabilities,
+  ): this {
+    return this.registerHostService(
+      'knowledge',
+      registryId,
+      async ({ method, payload }) => {
+        if (method !== 'retrieve') throw new Error(`Unsupported KnowledgeRuntime method ${method}`);
+        return (await handler(extractKnowledgeRuntimeRequest(payload))) as HarnessJsonValue;
+      },
+      { capabilities },
     );
   }
 
@@ -596,6 +934,41 @@ export class HarnessClient {
     options: { registryId?: string; requestTimeoutMs?: number } = {},
   ): this {
     return this.registerHook('before_tool_call', handler as GenericHookHandler, options);
+  }
+
+  onBeforeKnowledgeRequest(
+    handler: BeforeKnowledgeRequestHookHandler,
+    options: { registryId?: string; requestTimeoutMs?: number } = {},
+  ): this {
+    return this.registerHook('before_knowledge_request', handler as GenericHookHandler, options);
+  }
+
+  onAfterKnowledgeRetrieval(
+    handler: AfterKnowledgeRetrievalHookHandler,
+    options: { registryId?: string; requestTimeoutMs?: number } = {},
+  ): this {
+    return this.registerHook('after_knowledge_retrieval', handler as GenericHookHandler, options);
+  }
+
+  onBeforeMemoryRead(
+    handler: BeforeMemoryReadHookHandler,
+    options: { registryId?: string; requestTimeoutMs?: number } = {},
+  ): this {
+    return this.registerHook('before_memory_read', handler as GenericHookHandler, options);
+  }
+
+  onBeforeMemoryWrite(
+    handler: BeforeMemoryWriteHookHandler,
+    options: { registryId?: string; requestTimeoutMs?: number } = {},
+  ): this {
+    return this.registerHook('before_memory_write', handler as GenericHookHandler, options);
+  }
+
+  onBeforeMemoryOperation(
+    handler: BeforeMemoryOperationHookHandler,
+    options: { registryId?: string; requestTimeoutMs?: number } = {},
+  ): this {
+    return this.registerHook('before_memory_operation', handler as GenericHookHandler, options);
   }
 
   registerHook(
@@ -893,6 +1266,55 @@ function normalizeHostServiceRegistrationResult(
   };
 }
 
+function normalizeModelProviderResult(value: HarnessJsonValue): HarnessJsonValue {
+  if (!isJsonObject(value)) return value;
+  return {
+    ...value,
+    usage: normalizeRunUsage(value.usage),
+  };
+}
+
+function normalizeRunUsage(value: HarnessJsonValue | undefined): HarnessJsonValue {
+  const usage = isJsonObject(value) ? value : {};
+  return {
+    model_calls: numericUsageValue(usage.model_calls, 0),
+    tokens: normalizeTokenUsage(usage.tokens),
+    accepted_semantic_actions: numericUsageValue(usage.accepted_semantic_actions, 0),
+    tool_calls: numericUsageValue(usage.tool_calls, 0),
+    tool_retries: numericUsageValue(usage.tool_retries, 0),
+    knowledge_requests: numericUsageValue(usage.knowledge_requests, 0),
+    memory_requests: numericUsageValue(usage.memory_requests, 0),
+    embedding_requests: numericUsageValue(usage.embedding_requests, 0),
+    duration_ms: optionalNumericUsageValue(usage.duration_ms),
+    cost: normalizeCostUsage(usage.cost),
+  };
+}
+
+function normalizeTokenUsage(value: HarnessJsonValue | undefined): HarnessJsonValue {
+  const tokens = isJsonObject(value) ? value : {};
+  return {
+    input_tokens: optionalNumericUsageValue(tokens.input_tokens),
+    output_tokens: optionalNumericUsageValue(tokens.output_tokens),
+    total_tokens: optionalNumericUsageValue(tokens.total_tokens),
+  };
+}
+
+function normalizeCostUsage(value: HarnessJsonValue | undefined): HarnessJsonValue {
+  const cost = isJsonObject(value) ? value : {};
+  return {
+    amount: optionalNumericUsageValue(cost.amount),
+    currency: typeof cost.currency === 'string' ? cost.currency : null,
+  };
+}
+
+function numericUsageValue(value: HarnessJsonValue | undefined, fallback: number): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : fallback;
+}
+
+function optionalNumericUsageValue(value: HarnessJsonValue | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function isJsonObject(
   value: HarnessJsonValue | undefined,
 ): value is { [key: string]: HarnessJsonValue } {
@@ -939,6 +1361,15 @@ function extractHookInput(payload: HarnessJsonValue): HarnessJsonValue {
     'input' in payload
     ? (payload.input as HarnessJsonValue)
     : payload;
+}
+
+function extractKnowledgeRuntimeRequest(payload: HarnessJsonValue): KnowledgeRuntimeRequest {
+  return typeof payload === 'object' &&
+    payload !== null &&
+    !Array.isArray(payload) &&
+    'request' in payload
+    ? (payload.request as KnowledgeRuntimeRequest)
+    : (payload as KnowledgeRuntimeRequest);
 }
 
 function withTimeout<T>(value: T | Promise<T>, timeoutMs: number, message: string): Promise<T> {
