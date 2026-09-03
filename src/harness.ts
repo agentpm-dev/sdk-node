@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { EventEmitter } from 'node:events';
+import { createInterface } from 'node:readline';
 
 export type HarnessJsonPrimitive = string | number | boolean | null;
 export type HarnessJsonValue =
@@ -493,7 +494,41 @@ type RegisteredService = {
 
 const PROTOCOL = 'agentpm-harness-machine' as const;
 const VERSION = 1 as const;
+const SERVICE_PROTOCOL = 'agentpm-service' as const;
+const SERVICE_VERSION = 1 as const;
 const DEFAULT_HOOK_REGISTRY_ID = 'sdk-hooks';
+
+export type AgentpmServiceFrameKind =
+  | 'initialize'
+  | 'initialized'
+  | 'request'
+  | 'response'
+  | 'event'
+  | 'error';
+
+export type AgentpmServiceError = {
+  code: string;
+  message: string;
+  retryable?: boolean;
+};
+
+export type AgentpmServiceEnvelope = {
+  protocol: typeof SERVICE_PROTOCOL;
+  version: typeof SERVICE_VERSION;
+  kind: AgentpmServiceFrameKind;
+  id?: string;
+  service: HarnessServiceRole | string;
+  method?: string;
+  payload?: HarnessJsonValue;
+  result?: HarnessJsonValue;
+  error?: AgentpmServiceError;
+};
+
+export type KnowledgeRuntimeProcessOptions = {
+  input?: NodeJS.ReadableStream;
+  output?: NodeJS.WritableStream;
+  ready?: boolean;
+};
 
 export class HarnessProtocolError extends Error {
   readonly code: string;
@@ -502,6 +537,94 @@ export class HarnessProtocolError extends Error {
     super(error.message);
     this.name = 'HarnessProtocolError';
     this.code = error.code;
+  }
+}
+
+export async function serveKnowledgeRuntimeProcess(
+  registryId: string,
+  handler: KnowledgeRuntimeHandler,
+  capabilities: KnowledgeProviderCapabilities,
+  options: KnowledgeRuntimeProcessOptions = {},
+): Promise<void> {
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const ready = options.ready ?? true;
+  const lines = createInterface({ input });
+
+  const write = (frame: Omit<AgentpmServiceEnvelope, 'protocol' | 'version'>): void => {
+    output.write(
+      `${JSON.stringify({
+        protocol: SERVICE_PROTOCOL,
+        version: SERVICE_VERSION,
+        ...frame,
+      })}\n`,
+    );
+  };
+
+  const writeError = (
+    request: Partial<AgentpmServiceEnvelope>,
+    code: string,
+    error: unknown,
+  ): void => {
+    write({
+      kind: 'error',
+      id: request.id,
+      service: request.service ?? 'knowledge',
+      error: {
+        code,
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    });
+  };
+
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    let frame: Partial<AgentpmServiceEnvelope> = { service: 'knowledge' };
+    try {
+      frame = JSON.parse(line) as Partial<AgentpmServiceEnvelope>;
+      if (frame.protocol !== SERVICE_PROTOCOL) {
+        throw new Error(`unsupported service protocol ${String(frame.protocol)}`);
+      }
+      if (frame.version !== SERVICE_VERSION) {
+        throw new Error(`unsupported service protocol version ${String(frame.version)}`);
+      }
+      if (frame.service !== 'knowledge') {
+        throw new Error(`unsupported service ${String(frame.service)}`);
+      }
+
+      if (frame.kind === 'initialize') {
+        write({
+          kind: 'initialized',
+          id: frame.id,
+          service: 'knowledge',
+          result: {
+            ...capabilities,
+            registry_id: registryId,
+            ready,
+          },
+        });
+        continue;
+      }
+
+      if (frame.kind !== 'request') {
+        throw new Error(`unsupported service frame kind ${String(frame.kind)}`);
+      }
+      if (frame.method !== 'retrieve') {
+        throw new Error(`Unsupported KnowledgeRuntime method ${String(frame.method)}`);
+      }
+
+      write({
+        kind: 'response',
+        id: frame.id,
+        service: 'knowledge',
+        result: (await handler(
+          extractKnowledgeRuntimeRequest(frame.payload ?? null),
+        )) as HarnessJsonValue,
+      });
+    } catch (error: unknown) {
+      writeError(frame, 'knowledge_runtime_error', error);
+    }
   }
 }
 

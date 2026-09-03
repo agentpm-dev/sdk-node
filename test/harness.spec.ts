@@ -1,17 +1,20 @@
 import { chmodSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import {
   HarnessClient,
   HarnessProtocolError,
+  serveKnowledgeRuntimeProcess,
   type AfterKnowledgeRetrievalHookHandler,
   type BeforeKnowledgeRequestHookHandler,
   type BeforeMemoryOperationHookHandler,
   type BeforeMemoryReadHookHandler,
   type BeforeMemoryWriteHookHandler,
+  type KnowledgeProviderCapabilities,
   type KnowledgeRuntimeRequest,
 } from '../src';
 
@@ -932,4 +935,200 @@ describe('HarnessClient', () => {
       await client.shutdown();
     },
   );
+});
+
+describe('serveKnowledgeRuntimeProcess', () => {
+  function collectOutput(): { stream: Writable; lines: () => unknown[] } {
+    let output = '';
+    return {
+      stream: new Writable({
+        write(chunk, _encoding, callback) {
+          output += chunk.toString();
+          callback();
+        },
+      }),
+      lines: () =>
+        output
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as unknown),
+    };
+  }
+
+  const capabilities: KnowledgeProviderCapabilities = {
+    modes: ['vector_query'],
+    features: ['citations'],
+    packages: [
+      {
+        package: '@zack/m13-reference-corpus',
+        version: '0.1.0',
+        corpus: 'sha256:corpus',
+        ready: true,
+      },
+    ],
+  };
+
+  it('serves initialize and retrieve over agentpm-service JSONL', async () => {
+    const input = new PassThrough();
+    const output = collectOutput();
+    const calls: KnowledgeRuntimeRequest[] = [];
+    const served = serveKnowledgeRuntimeProcess(
+      'pinecone-reference',
+      async (request) => {
+        calls.push(request);
+        return {
+          ok: true,
+          package: request.package,
+          version: request.version,
+          mode: request.mode,
+          query: request.query,
+          results: [
+            {
+              rank: 1,
+              score: 0.98,
+              chunk_id: 'chunk-alpha',
+              source_id: 'source-alpha',
+              text: 'alpha result',
+            },
+          ],
+          citations: [{ chunk_id: 'chunk-alpha', source_id: 'source-alpha' }],
+        };
+      },
+      capabilities,
+      { input, output: output.stream },
+    );
+
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'initialize',
+        id: 'init-1',
+        service: 'knowledge',
+        method: 'initialize',
+        payload: { role: 'knowledge', registry_id: 'pinecone-reference' },
+      })}\n`,
+    );
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'request',
+        id: 'req-1',
+        service: 'knowledge',
+        method: 'retrieve',
+        payload: {
+          request: {
+            package: '@zack/m13-reference-corpus',
+            version: '0.1.0',
+            mode: 'vector_query',
+            query: 'launch checklist',
+            top_k: 1,
+            return_citations: true,
+          },
+        },
+      })}\n`,
+    );
+    input.end();
+
+    await served;
+
+    expect(calls).toEqual([
+      {
+        package: '@zack/m13-reference-corpus',
+        version: '0.1.0',
+        mode: 'vector_query',
+        query: 'launch checklist',
+        top_k: 1,
+        return_citations: true,
+      },
+    ]);
+    expect(output.lines()).toEqual([
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'initialized',
+        id: 'init-1',
+        service: 'knowledge',
+        result: {
+          ...capabilities,
+          registry_id: 'pinecone-reference',
+          ready: true,
+        },
+      },
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'response',
+        id: 'req-1',
+        service: 'knowledge',
+        result: {
+          ok: true,
+          package: '@zack/m13-reference-corpus',
+          version: '0.1.0',
+          mode: 'vector_query',
+          query: 'launch checklist',
+          results: [
+            {
+              rank: 1,
+              score: 0.98,
+              chunk_id: 'chunk-alpha',
+              source_id: 'source-alpha',
+              text: 'alpha result',
+            },
+          ],
+          citations: [{ chunk_id: 'chunk-alpha', source_id: 'source-alpha' }],
+        },
+      },
+    ]);
+  });
+
+  it('returns service error frames for handler failures', async () => {
+    const input = new PassThrough();
+    const output = collectOutput();
+    const served = serveKnowledgeRuntimeProcess(
+      'pgvector-reference',
+      () => {
+        throw new Error('backend unavailable');
+      },
+      capabilities,
+      { input, output: output.stream },
+    );
+
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'request',
+        id: 'req-err',
+        service: 'knowledge',
+        method: 'retrieve',
+        payload: {
+          package: '@zack/m13-reference-corpus',
+          version: '0.1.0',
+          mode: 'vector_query',
+          query: 'launch checklist',
+        },
+      })}\n`,
+    );
+    input.end();
+
+    await served;
+
+    expect(output.lines()).toEqual([
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'error',
+        id: 'req-err',
+        service: 'knowledge',
+        error: {
+          code: 'knowledge_runtime_error',
+          message: 'backend unavailable',
+          retryable: false,
+        },
+      },
+    ]);
+  });
 });
