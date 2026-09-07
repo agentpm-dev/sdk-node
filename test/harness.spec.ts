@@ -355,13 +355,19 @@ describe('HarnessClient', () => {
         results: [{ source_id: 'src_1', chunk_id: 'chunk_1', text: 'model-visible text' }],
       },
     });
-    const beforeMemoryRead: BeforeMemoryReadHookHandler = () => ({
+    const beforeMemoryRead: BeforeMemoryReadHookHandler = (input) => ({
       decision: 'continue',
-      patch: { limit: 1 },
+      patch: { limit: 1, mode: input.retrieval_modes[0] ?? input.mode },
     });
     const beforeMemoryWrite: BeforeMemoryWriteHookHandler = (input) => ({
       decision: 'continue',
-      patch: { content: input.content },
+      patch: {
+        content: {
+          original: input.content,
+          operation: input.operation,
+          record_id: input.record_id,
+        },
+      },
     });
     const beforeMemoryOperation: BeforeMemoryOperationHookHandler = () => ({
       decision: 'continue',

@@ -323,10 +323,13 @@ export type BeforeMemoryReadInput = {
   package: string;
   space: string;
   scope: HarnessJsonValue;
+  record_id?: string;
+  record_type?: string;
   query?: string;
   filter?: HarnessJsonValue;
   limit?: number;
   mode?: string;
+  retrieval_modes: string[];
 };
 
 export type BeforeMemoryReadPatch = {
@@ -344,7 +347,9 @@ export type BeforeMemoryWriteInput = {
   phase_id: string;
   package: string;
   space: string;
+  operation: string;
   record_type: string;
+  record_id?: string;
   scope: HarnessJsonValue;
   content: HarnessJsonValue;
 };
