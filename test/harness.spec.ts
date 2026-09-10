@@ -711,7 +711,7 @@ describe('HarnessClient', () => {
           } else if (frame.method === 'cancel_run') {
             write({ kind: 'response', id: frame.id, payload: { accepted: true, status: 'cancelled' } });
           } else if (frame.method === 'memory_operation') {
-            write({ kind: 'error', id: frame.id, error: { code: 'memory_operation_unavailable', message: 'not live yet' } });
+            write({ kind: 'error', id: frame.id, error: { code: 'memory_operation_no_active_run', message: 'external Memory-operation control requires an active Harness Run' } });
           }
         });
       `),
@@ -720,8 +720,14 @@ describe('HarnessClient', () => {
     const client = new HarnessClient({ agentpmPath: process.execPath, args: [script] });
     await client.initialize();
     await expect(client.cancelRun()).resolves.toEqual({ accepted: true, status: 'cancelled' });
-    await expect(client.invokeMemoryOperation({ operation: 'compact' })).rejects.toMatchObject({
-      code: 'memory_operation_unavailable',
+    await expect(
+      client.invokeMemoryOperation({
+        package: 'machine-memory-test',
+        operation: 'external_delete_notes',
+        current_resolved_scope: { user: 'user-123' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'memory_operation_no_active_run',
     });
     client.stop();
   });

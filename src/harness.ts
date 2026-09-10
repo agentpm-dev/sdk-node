@@ -369,8 +369,37 @@ export type BeforeMemoryOperationInput = {
   phase_id: string;
   package: string;
   operation: string;
-  scope: HarnessJsonValue;
-  source_summary: HarnessJsonValue;
+  scope: Record<string, string>;
+  source_summary: BeforeMemoryOperationSourceSummary;
+};
+
+export type BeforeMemoryOperationSourceSummary = {
+  operation: BeforeMemoryOperationSummary;
+  referenced_spaces: string[];
+  sources: BeforeMemoryOperationSource[];
+};
+
+export type BeforeMemoryOperationSummary = {
+  package: string;
+  package_version: string;
+  operation: string;
+  operation_type: 'transform' | 'consolidate' | 'delete' | string;
+  description: string;
+  trigger: HarnessJsonValue;
+  inputs: HarnessJsonValue;
+  output?: HarnessJsonValue;
+  targets: HarnessJsonValue;
+  source_handling?: 'retain' | 'retain_until_expiration' | 'delete_after_success' | string;
+  output_mode?: 'create' | 'replace_input' | string;
+  preserve_provenance?: boolean;
+  cascade_derived_records?: boolean;
+  binding_scope: string;
+};
+
+export type BeforeMemoryOperationSource = {
+  space: string;
+  record_type?: string;
+  active_count: number;
 };
 
 export type BeforeMemoryOperationPatch = {
