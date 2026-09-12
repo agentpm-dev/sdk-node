@@ -180,6 +180,8 @@ Host capability advertisement is role-specific. `registerModelProvider` automati
 
 For CLI-launched custom Knowledge runtimes, use `serveKnowledgeRuntimeProcess(registryId, handler, capabilities)` to serve the public `agentpm-service` JSONL process protocol from a Node provider process. The Pinecone and pgvector reference providers live in <https://github.com/agentpm-dev/agentpm-examples/tree/main/knowledge-packages/m13-reference-providers>; they are examples to copy from, not provider-specific SDK exports.
 
+For CLI-launched custom Memory runtimes, use `serveMemoryRuntimeProcess(registryId, handler, capabilities)` to serve the same public process protocol for MemoryRuntime methods: `read`, `write`, `count`, `load_operation_state`, `store_operation_state`, and `commit_lifecycle`. PostgreSQL/pgvector and Redis reference providers live in <https://github.com/agentpm-dev/agentpm-examples/tree/main/memory-packages/m16-reference-providers>; they are examples to copy from, not provider-specific SDK exports.
+
 ### Load an installed skill package
 
 ```ts

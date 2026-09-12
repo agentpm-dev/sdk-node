@@ -157,6 +157,19 @@ export type MemoryProviderCapabilities = {
   packages?: MemoryPackageRealization[];
 };
 
+export type MemoryRuntimeMethod =
+  | 'read'
+  | 'write'
+  | 'count'
+  | 'load_operation_state'
+  | 'store_operation_state'
+  | 'commit_lifecycle';
+
+export type MemoryRuntimeHandler = (
+  method: MemoryRuntimeMethod,
+  payload: HarnessJsonValue,
+) => HarnessJsonValue | Promise<HarnessJsonValue>;
+
 export type ApprovalCapabilities = {
   approval: true;
   cancellation?: boolean;
@@ -662,6 +675,104 @@ export async function serveKnowledgeRuntimeProcess(
   }
 }
 
+const MEMORY_RUNTIME_METHODS = new Set<MemoryRuntimeMethod>([
+  'read',
+  'write',
+  'count',
+  'load_operation_state',
+  'store_operation_state',
+  'commit_lifecycle',
+]);
+
+export async function serveMemoryRuntimeProcess(
+  registryId: string,
+  handler: MemoryRuntimeHandler,
+  capabilities: MemoryProviderCapabilities,
+  options: KnowledgeRuntimeProcessOptions = {},
+): Promise<void> {
+  const input = options.input ?? process.stdin;
+  const output = options.output ?? process.stdout;
+  const ready = options.ready ?? true;
+  const lines = createInterface({ input });
+
+  const write = (frame: Omit<AgentpmServiceEnvelope, 'protocol' | 'version'>): void => {
+    output.write(
+      `${JSON.stringify({
+        protocol: SERVICE_PROTOCOL,
+        version: SERVICE_VERSION,
+        ...frame,
+      })}\n`,
+    );
+  };
+
+  const writeError = (
+    request: Partial<AgentpmServiceEnvelope>,
+    code: string,
+    error: unknown,
+  ): void => {
+    write({
+      kind: 'error',
+      id: request.id,
+      service: request.service ?? 'memory',
+      error: {
+        code,
+        message: error instanceof Error ? error.message : String(error),
+        retryable: false,
+      },
+    });
+  };
+
+  for await (const line of lines) {
+    if (!line.trim()) continue;
+    let frame: Partial<AgentpmServiceEnvelope> = { service: 'memory' };
+    try {
+      frame = JSON.parse(line) as Partial<AgentpmServiceEnvelope>;
+      if (frame.protocol !== SERVICE_PROTOCOL) {
+        throw new Error(`unsupported service protocol ${String(frame.protocol)}`);
+      }
+      if (frame.version !== SERVICE_VERSION) {
+        throw new Error(`unsupported service protocol version ${String(frame.version)}`);
+      }
+      if (frame.service !== 'memory') {
+        throw new Error(`unsupported service ${String(frame.service)}`);
+      }
+
+      if (frame.kind === 'initialize') {
+        write({
+          kind: 'initialized',
+          id: frame.id,
+          service: 'memory',
+          result: {
+            ...capabilities,
+            registry_id: registryId,
+            ready,
+          },
+        });
+        continue;
+      }
+
+      if (frame.kind !== 'request') {
+        throw new Error(`unsupported service frame kind ${String(frame.kind)}`);
+      }
+      if (!MEMORY_RUNTIME_METHODS.has(frame.method as MemoryRuntimeMethod)) {
+        throw new Error(`Unsupported MemoryRuntime method ${String(frame.method)}`);
+      }
+
+      write({
+        kind: 'response',
+        id: frame.id,
+        service: 'memory',
+        result: (await handler(
+          frame.method as MemoryRuntimeMethod,
+          frame.payload ?? null,
+        )) as HarnessJsonValue,
+      });
+    } catch (error: unknown) {
+      writeError(frame, 'memory_runtime_error', error);
+    }
+  }
+}
+
 export class HarnessClient {
   private readonly options: HarnessClientOptions;
   private child: ChildProcessWithoutNullStreams | null = null;
@@ -909,6 +1020,24 @@ export class HarnessClient {
       async ({ method, payload }) => {
         if (method !== 'retrieve') throw new Error(`Unsupported KnowledgeRuntime method ${method}`);
         return (await handler(extractKnowledgeRuntimeRequest(payload))) as HarnessJsonValue;
+      },
+      { capabilities },
+    );
+  }
+
+  registerMemoryRuntime(
+    registryId: string,
+    handler: MemoryRuntimeHandler,
+    capabilities: MemoryProviderCapabilities,
+  ): this {
+    return this.registerHostService(
+      'memory',
+      registryId,
+      async ({ method, payload }) => {
+        if (!MEMORY_RUNTIME_METHODS.has(method as MemoryRuntimeMethod)) {
+          throw new Error(`Unsupported MemoryRuntime method ${method}`);
+        }
+        return (await handler(method as MemoryRuntimeMethod, payload)) as HarnessJsonValue;
       },
       { capabilities },
     );
