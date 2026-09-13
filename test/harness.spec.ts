@@ -9,6 +9,7 @@ import {
   HarnessClient,
   HarnessProtocolError,
   serveKnowledgeRuntimeProcess,
+  serveMemoryRuntimeProcess,
   type AfterKnowledgeRetrievalHookHandler,
   type BeforeKnowledgeRequestHookHandler,
   type BeforeMemoryOperationHookHandler,
@@ -16,6 +17,8 @@ import {
   type BeforeMemoryWriteHookHandler,
   type KnowledgeProviderCapabilities,
   type KnowledgeRuntimeRequest,
+  type MemoryProviderCapabilities,
+  type MemoryRuntimeMethod,
 } from '../src';
 
 const protocol = 'agentpm-harness-machine';
@@ -355,13 +358,19 @@ describe('HarnessClient', () => {
         results: [{ source_id: 'src_1', chunk_id: 'chunk_1', text: 'model-visible text' }],
       },
     });
-    const beforeMemoryRead: BeforeMemoryReadHookHandler = () => ({
+    const beforeMemoryRead: BeforeMemoryReadHookHandler = (input) => ({
       decision: 'continue',
-      patch: { limit: 1 },
+      patch: { limit: 1, mode: input.retrieval_modes[0] ?? input.mode },
     });
     const beforeMemoryWrite: BeforeMemoryWriteHookHandler = (input) => ({
       decision: 'continue',
-      patch: { content: input.content },
+      patch: {
+        content: {
+          original: input.content,
+          operation: input.operation,
+          record_id: input.record_id,
+        },
+      },
     });
     const beforeMemoryOperation: BeforeMemoryOperationHookHandler = () => ({
       decision: 'continue',
@@ -705,7 +714,7 @@ describe('HarnessClient', () => {
           } else if (frame.method === 'cancel_run') {
             write({ kind: 'response', id: frame.id, payload: { accepted: true, status: 'cancelled' } });
           } else if (frame.method === 'memory_operation') {
-            write({ kind: 'error', id: frame.id, error: { code: 'memory_operation_unavailable', message: 'not live yet' } });
+            write({ kind: 'error', id: frame.id, error: { code: 'memory_operation_no_active_run', message: 'external Memory-operation control requires an active Harness Run' } });
           }
         });
       `),
@@ -714,8 +723,14 @@ describe('HarnessClient', () => {
     const client = new HarnessClient({ agentpmPath: process.execPath, args: [script] });
     await client.initialize();
     await expect(client.cancelRun()).resolves.toEqual({ accepted: true, status: 'cancelled' });
-    await expect(client.invokeMemoryOperation({ operation: 'compact' })).rejects.toMatchObject({
-      code: 'memory_operation_unavailable',
+    await expect(
+      client.invokeMemoryOperation({
+        package: 'machine-memory-test',
+        operation: 'external_delete_notes',
+        current_resolved_scope: { user: 'user-123' },
+      }),
+    ).rejects.toMatchObject({
+      code: 'memory_operation_no_active_run',
     });
     client.stop();
   });
@@ -1126,6 +1141,192 @@ describe('serveKnowledgeRuntimeProcess', () => {
         error: {
           code: 'knowledge_runtime_error',
           message: 'backend unavailable',
+          retryable: false,
+        },
+      },
+    ]);
+  });
+});
+
+describe('serveMemoryRuntimeProcess', () => {
+  function collectOutput(): { stream: Writable; lines: () => unknown[] } {
+    let output = '';
+    return {
+      stream: new Writable({
+        write(chunk, _encoding, callback) {
+          output += chunk.toString();
+          callback();
+        },
+      }),
+      lines: () =>
+        output
+          .trim()
+          .split('\n')
+          .filter(Boolean)
+          .map((line) => JSON.parse(line) as unknown),
+    };
+  }
+
+  const capabilities: MemoryProviderCapabilities = {
+    descriptor: {
+      space_models: ['document', 'collection', 'sequence'],
+      retrieval_modes: ['key', 'filter', 'chronological', 'full_text', 'semantic'],
+      retention_actions: ['delete', 'archive'],
+      constraints: ['append_only'],
+      capacity: true,
+      durable_trigger_state: true,
+      atomic_batches: true,
+    },
+    packages: [
+      {
+        package: '@zack/m16-reference-memory',
+        version: '0.1.0',
+        ready: true,
+      },
+    ],
+  };
+
+  it('serves initialize and MemoryRuntime methods over agentpm-service JSONL', async () => {
+    const input = new PassThrough();
+    const output = collectOutput();
+    const calls: Array<{ method: MemoryRuntimeMethod; payload: unknown }> = [];
+    const served = serveMemoryRuntimeProcess(
+      'pgvector-memory-reference',
+      async (method, payload) => {
+        calls.push({ method, payload });
+        return {
+          ok: true,
+          package: '@zack/m16-reference-memory',
+          package_version: '0.1.0',
+          space: 'notes',
+          count: 2,
+        };
+      },
+      capabilities,
+      { input, output: output.stream },
+    );
+
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'initialize',
+        id: 'init-1',
+        service: 'memory',
+        method: 'initialize',
+        payload: { role: 'memory', registry_id: 'pgvector-memory-reference' },
+      })}\n`,
+    );
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'request',
+        id: 'req-1',
+        service: 'memory',
+        method: 'count',
+        payload: {
+          request: {
+            package: '@zack/m16-reference-memory',
+            package_version: '0.1.0',
+            space: 'notes',
+            scope: { user: 'zack' },
+            record_type: 'note',
+          },
+        },
+      })}\n`,
+    );
+    input.end();
+
+    await served;
+
+    expect(calls).toEqual([
+      {
+        method: 'count',
+        payload: {
+          request: {
+            package: '@zack/m16-reference-memory',
+            package_version: '0.1.0',
+            space: 'notes',
+            scope: { user: 'zack' },
+            record_type: 'note',
+          },
+        },
+      },
+    ]);
+    expect(output.lines()).toEqual([
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'initialized',
+        id: 'init-1',
+        service: 'memory',
+        result: {
+          ...capabilities,
+          registry_id: 'pgvector-memory-reference',
+          ready: true,
+        },
+      },
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'response',
+        id: 'req-1',
+        service: 'memory',
+        result: {
+          ok: true,
+          package: '@zack/m16-reference-memory',
+          package_version: '0.1.0',
+          space: 'notes',
+          count: 2,
+        },
+      },
+    ]);
+  });
+
+  it('returns service error frames for handler failures', async () => {
+    const input = new PassThrough();
+    const output = collectOutput();
+    const served = serveMemoryRuntimeProcess(
+      'redis-memory-reference',
+      () => {
+        throw new Error('memory backend unavailable');
+      },
+      capabilities,
+      { input, output: output.stream },
+    );
+
+    input.write(
+      `${JSON.stringify({
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'request',
+        id: 'req-err',
+        service: 'memory',
+        method: 'commit_lifecycle',
+        payload: {
+          request: {
+            package: '@zack/m16-reference-memory',
+            package_version: '0.1.0',
+            operation: 'summarize_notes',
+          },
+        },
+      })}\n`,
+    );
+    input.end();
+
+    await served;
+
+    expect(output.lines()).toEqual([
+      {
+        protocol: 'agentpm-service',
+        version: 1,
+        kind: 'error',
+        id: 'req-err',
+        service: 'memory',
+        error: {
+          code: 'memory_runtime_error',
+          message: 'memory backend unavailable',
           retryable: false,
         },
       },
