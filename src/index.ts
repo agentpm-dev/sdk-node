@@ -1,20 +1,11 @@
-import { spawn, spawnSync } from 'node:child_process';
-import {
-  readFileSync,
-  existsSync,
-  mkdirSync,
-  mkdtempSync,
-  rmSync,
-  statSync,
-  readdirSync,
-  writeFileSync,
-} from 'node:fs';
-import { basename, dirname, join, resolve } from 'node:path';
+import { readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { dirname, join, resolve } from 'node:path';
 import fs from 'node:fs';
 import path from 'node:path';
-import { platform } from 'node:os';
 
 import semver from 'semver';
+
+import { invoke } from './cli';
 
 export * from './harness';
 
@@ -716,12 +707,7 @@ type LockfileV2 = {
   roots?: Record<string, LockedRoot>;
 };
 
-const MAX_BYTES = 10 * 1024 * 1024;
-const GRACE_AFTER_JSON = 400; // ms
-const KILL_AFTER_TERM = 150; // ms
-
-const DEFAULT_TIMEOUT_MS = 120_000; // 2m
-const ALLOWED_INTERPRETERS = new Set(['node', 'nodejs', 'python', 'python3']);
+const DEFAULT_TIMEOUT_MS = 120_000;
 
 function debugEnabled(): boolean {
   const v = process.env.AGENTPM_DEBUG || '';
@@ -730,164 +716,6 @@ function debugEnabled(): boolean {
 
 function dprint(...args: unknown[]) {
   if (debugEnabled()) console.error('[agentpm-debug]', ...args);
-}
-
-function abbrev(s: string, n = 240) {
-  return s.length <= n ? s : s.slice(0, n) + '…';
-}
-
-function mergeEnv(
-  entryEnv?: Record<string, string>,
-  callerEnv?: Record<string, string>,
-): Record<string, string> {
-  const merged: Record<string, string> = {};
-  // copy only defined vars from process.env
-  for (const [k, v] of Object.entries(process.env)) {
-    if (typeof v === 'string') merged[k] = v;
-  }
-  if (entryEnv) Object.assign(merged, entryEnv);
-  if (callerEnv) Object.assign(merged, callerEnv);
-  return merged;
-}
-
-// Minimal cross-platform PATH resolver (no external deps)
-function resolveOnPath(cmd: string, envPath: string): string | null {
-  const sepList = envPath ? envPath.split(path.delimiter) : [];
-  const hasDir = cmd.includes('/') || cmd.includes('\\');
-  const pathext =
-    process.platform === 'win32'
-      ? (process.env.PATHEXT || '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
-      : [''];
-
-  const tryFile = (full: string) => {
-    try {
-      fs.accessSync(full, fs.constants.X_OK);
-      return true;
-    } catch {
-      return false;
-    }
-  };
-
-  // If cmd has a slash, check it directly (and PATHEXT on Windows)
-  if (hasDir) {
-    for (const ext of pathext) {
-      const full = process.platform === 'win32' ? fullWithExt(cmd, ext) : cmd;
-      if (tryFile(full)) return full;
-    }
-    return null;
-  }
-
-  // Search each dir on PATH
-  for (const dir of sepList) {
-    if (!dir) continue;
-
-    // exact name first
-    const base = path.join(dir, cmd);
-    if (tryFile(base)) return base;
-
-    // try PATHEXT on Windows
-    if (process.platform === 'win32') {
-      for (const ext of pathext) {
-        const full = fullWithExt(base, ext);
-        if (tryFile(full)) return full;
-      }
-    }
-  }
-  return null;
-
-  function fullWithExt(p: string, ext: string) {
-    // ext already includes dot
-    return p.endsWith(ext) ? p : p + ext.toLowerCase();
-  }
-}
-
-function canonicalInterpreter(cmd: string): string {
-  const base = basename(cmd).toLowerCase();
-  return base.replace(/\.(exe|cmd|bat)$/i, '');
-}
-
-const BARE_NODE = /^(node|nodejs)$/i;
-const BARE_PY = /^python(3(\.\d+)*)?$/i;
-
-function interpreterFamily(cmd: string): 'node' | 'python' | null {
-  const base = path
-    .basename(cmd)
-    .toLowerCase()
-    .replace(/\.(exe|cmd|bat)$/i, '');
-  if (BARE_NODE.test(base)) return 'node';
-  if (BARE_PY.test(base)) return 'python';
-  return null; // absolute paths still get matched by basename
-}
-
-function resolveInterpreterCommand(
-  cmd: string,
-  entryEnv?: Record<string, string>,
-  callerEnv?: Record<string, string>,
-  runtimeType?: string, // optional hint
-): string {
-  const merged = mergeEnv(entryEnv, callerEnv);
-
-  // Prefer inferring from the command; fall back to runtime hint if needed
-  const inferred = interpreterFamily(cmd);
-  const hint = runtimeType === 'node' || runtimeType === 'python' ? runtimeType : undefined;
-  const family: 'node' | 'python' | null = inferred ?? hint ?? null;
-
-  let resolved = cmd;
-  if (family === 'node' && merged.AGENTPM_NODE) {
-    dprint(`override interpreter (node): "${cmd}" -> "${merged.AGENTPM_NODE}"`);
-    resolved = merged.AGENTPM_NODE;
-  } else if (family === 'python' && merged.AGENTPM_PYTHON) {
-    dprint(`override interpreter (python): "${cmd}" -> "${merged.AGENTPM_PYTHON}"`);
-    resolved = merged.AGENTPM_PYTHON;
-  }
-  return resolved;
-}
-
-function assertAllowedInterpreter(cmd: string) {
-  const canon = canonicalInterpreter(cmd);
-  if (
-    !ALLOWED_INTERPRETERS.has(canon) &&
-    !canon.startsWith('python3') // e.g. python3.11
-  ) {
-    throw new Error(
-      `Unsupported agent.json.entrypoint.command "${cmd}". Allowed: node|nodejs|python|python3`,
-    );
-  }
-}
-
-// verify the interpreter exists on PATH
-function assertInterpreterAvailable(
-  cmd: string,
-  entryEnv?: Record<string, string>,
-  callerEnv?: Record<string, string>,
-) {
-  const merged = mergeEnv(entryEnv, callerEnv);
-
-  const envPath = merged.PATH ?? '';
-  const found = resolveOnPath(cmd, envPath);
-  dprint(`interpreter="${cmd}" which=${found || '<not found>'}`);
-  dprint(`MERGED PATH=${abbrev(envPath)}`);
-
-  if (!found) {
-    // As an extra signal, try a quick --version with the merged env (covers aliases/wrappers)
-    const res = spawnSync(cmd, ['--version'], { stdio: 'ignore', env: merged });
-    const enoent =
-      (res.error && (res.error as NodeJS.ErrnoException).code === 'ENOENT') || !res.pid;
-    if (enoent) {
-      throw new Error(`Interpreter "${cmd}" not found on PATH.\nChecked PATH=${merged.PATH}`);
-    }
-  }
-}
-
-function assertInterpreterMatchesRuntime(cmd: string, runtime: Runtime) {
-  const canon = canonicalInterpreter(cmd);
-  const runtimeInterpreter = canonicalInterpreter(runtime.type);
-
-  if (!isInterpreterMatch(runtimeInterpreter, canon)) {
-    throw new Error(
-      `Misconfigured tool - agent.json.entrypoint.command "${cmd}" does not match tool runtime "${runtimeInterpreter}".`,
-    );
-  }
 }
 
 const ALIASES = new Map<string, ReadonlyArray<string>>([
@@ -950,6 +778,11 @@ function findInstalled(
     const nested = join(nameDir, version);
     const manifest = join(nested, 'agent.json');
     if (existsSync(manifest)) {
+      const installed = JSON.parse(readFileSync(manifest, 'utf8'));
+      if (!installed || installed.version !== version)
+        throw new Error(
+          'Installed package version mismatch; run agentpm install again on this machine',
+        );
       return { root: nested, manifestPath: manifest };
     }
   }
@@ -959,7 +792,7 @@ function findInstalled(
 function findProjectRoot(startDir: string): string {
   let dir = resolve(startDir);
   while (true) {
-    if (existsSync(join(dir, 'agent.json'))) return dir;
+    if (existsSync(join(dir, 'agent.json')) || existsSync(join(dir, 'agent.lock'))) return dir;
     if (existsSync(join(dir, 'package.json'))) return dir;
     if (existsSync(join(dir, 'pnpm-workspace.yaml'))) return dir;
     if (existsSync(join(dir, 'turbo.json'))) return dir;
@@ -1431,14 +1264,79 @@ function readLoopManifest(path: string): LoopManifest {
 // Keep the narrower name for now to avoid internal churn while Skills remain the
 // only v3-specific addition on top of the same overall lock envelope.
 function readLockfileV2(lockfilePath: string): LockfileV2 {
-  const raw = readFileSync(lockfilePath, 'utf-8');
-  const lock = JSON.parse(raw) as LockfileV2;
-  if (lock.lockfile_version !== 2 && lock.lockfile_version !== 3) {
+  const malformed = (): never => {
+    throw new Error(`Malformed agent.lock at ${lockfilePath}; run agentpm install to repair it`);
+  };
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(lockfilePath, 'utf8'));
+  } catch {
+    return malformed();
+  }
+  const object = (v: unknown): v is Record<string, unknown> =>
+    !!v && typeof v === 'object' && !Array.isArray(v);
+  if (
+    !object(value) ||
+    !Number.isInteger(value.lockfile_version) ||
+    ![2, 3, 4].includes(value.lockfile_version as number)
+  ) {
     throw new Error(
-      `Unsupported lockfile version at ${lockfilePath}; expected agent.lock v2 or v3. Run "agentpm install" to regenerate the lockfile.`,
+      `Unsupported lockfile version at ${lockfilePath}; expected agent.lock v2, v3 or v4. Update AgentPM CLI/SDK and run agentpm install.`,
     );
   }
-  return lock;
+  if (!object(value.packages) || !object(value.roots)) return malformed();
+  const packages = value.packages;
+  for (const [key, pkg] of Object.entries(packages)) {
+    if (
+      !object(pkg) ||
+      ['kind', 'name', 'version', 'integrity'].some(
+        (field) => typeof pkg[field] !== 'string' || !pkg[field],
+      )
+    )
+      return malformed();
+    if (key !== `${pkg.kind}:${pkg.name}@${pkg.version}`) return malformed();
+    if (pkg.python_resolution != null && !object(pkg.python_resolution)) return malformed();
+  }
+  for (const root of Object.values(value.roots)) {
+    if (!object(root)) return malformed();
+    for (const [field, kind] of Object.entries({
+      tools: 'tool',
+      skills: 'skill',
+      knowledge: 'knowledge',
+      memory: 'memory',
+      profiles: 'profile',
+    })) {
+      const refs = Object.hasOwn(root, field) ? root[field] : [];
+      if (
+        !Array.isArray(refs) ||
+        refs.some(
+          (ref) =>
+            typeof ref !== 'string' ||
+            !object(packages[ref]) ||
+            (packages[ref] as Record<string, unknown>).kind !== kind,
+        )
+      )
+        return malformed();
+    }
+    if (
+      root.loop != null &&
+      (typeof root.loop !== 'string' ||
+        !object(packages[root.loop]) ||
+        (packages[root.loop] as Record<string, unknown>).kind !== 'loop')
+    )
+      return malformed();
+    if (
+      Object.hasOwn(root, 'reserved') &&
+      (!object(root.reserved) ||
+        ['skills', 'knowledge', 'memory', 'profiles'].some(
+          (field) =>
+            Object.hasOwn(root.reserved as object, field) &&
+            !Array.isArray((root.reserved as Record<string, unknown>)[field]),
+        ))
+    )
+      return malformed();
+  }
+  return value as LockfileV2;
 }
 
 function resolveAgentLockfilePath(lockfileOverride?: string): string {
@@ -1791,303 +1689,6 @@ function readMemoryContractIndex(
   };
 }
 
-function buildEnv(
-  entryEnv: Record<string, string> = {},
-  callerEnv: Record<string, string> = {},
-  home: string,
-  tmpdir: string,
-) {
-  const base: Record<string, string> = {
-    PATH: process.env.PATH ?? '',
-    HOME: home,
-    TMPDIR: tmpdir,
-  };
-  if (process.env.LANG) base.LANG = process.env.LANG;
-  return { ...base, ...entryEnv, ...callerEnv };
-}
-
-function isPythonCmd(cmd0: string) {
-  const base = path.basename(cmd0).toLowerCase();
-  return base === 'py' || base.startsWith('python');
-}
-
-function ensureUnbufferedPython(cmd: string[], env: Record<string, string | undefined>) {
-  if (cmd.length === 0) return { cmd: [], env };
-
-  // Non-null assert + concrete types
-  const interp: string = cmd[0]!;
-  const rest: string[] = cmd.slice(1) as string[];
-
-  if (!isPythonCmd(interp)) {
-    return { cmd: [interp, ...rest], env };
-  }
-
-  const hasDashU = rest.includes('-u');
-  const nextEnv: NodeJS.ProcessEnv = { ...env, PYTHONUNBUFFERED: env.PYTHONUNBUFFERED ?? '1' };
-  const newCmd: string[] = hasDashU ? [interp, ...rest] : [interp, '-u', ...rest];
-  return { cmd: newCmd, env: nextEnv };
-}
-
-function spawnOnce(
-  root: string,
-  entry: Entrypoint,
-  payload: JsonValue,
-  opts: { timeoutMs: number; env?: Record<string, string> },
-): Promise<JsonValue> {
-  // 1) Tool working dir (what the tool expects for relative paths)
-  const cwd = resolve(root, entry.cwd ?? '.');
-
-  // 2) Isolated run dirs for HOME/TMPDIR
-  const runRoot = join(entry.cwd ?? '.', 'run');
-  mkdirSync(runRoot, { recursive: true });
-  const work = mkdtempSync(join(runRoot, 'run-'));
-  const home = join(work, 'home');
-  mkdirSync(home, { recursive: true });
-  const tmpd = join(work, 'tmp');
-  mkdirSync(tmpd, { recursive: true });
-
-  const isWin = platform() === 'win32';
-
-  // 3) Command + hardening flags
-  const { cmd, env } = ensureUnbufferedPython(
-    [entry.command, ...(entry.args ?? [])],
-    buildEnv(entry.env ?? {}, opts.env, home, tmpd),
-  );
-  if (
-    canonicalInterpreter(entry.command).startsWith('node') &&
-    !cmd.some((a) => a.startsWith('--max-old-space-size'))
-  ) {
-    cmd.splice(1, 0, '--max-old-space-size=256');
-  }
-  // NOTE: For python isolated mode, we can’t inject flags reliably from Node; rely on Python SDK for that case.
-
-  dprint(`launch: argv=${cmd}`);
-  dprint(`cwd=${cwd}`);
-  // 4) Clean env, 5) Spawn
-  const child = spawn(entry.command, cmd.slice(1), {
-    cwd,
-    env,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    detached: !isWin, // new process group on POSIX
-    windowsHide: true,
-  });
-
-  return new Promise((resolveP, rejectP) => {
-    let totalBytes = 0;
-    let out = ''; // full stdout (for diagnostics)
-    let err = '';
-    let parsed: unknown | null = null;
-    let sentTERM = false;
-    let sentKILL = false;
-
-    // --- Timers ---
-    const timeout = setTimeout(() => {
-      killTree(child, true);
-      rejectOnce(new Error(`Tool timed out after ${opts.timeoutMs}ms`));
-    }, opts.timeoutMs);
-
-    let graceTimer: NodeJS.Timeout | null = null;
-    function startGrace() {
-      if (graceTimer) return;
-      graceTimer = setTimeout(() => {
-        if (child.exitCode == null) {
-          killTree(child, false);
-          sentTERM = true;
-          setTimeout(() => {
-            if (child.exitCode == null) {
-              killTree(child, true);
-              sentKILL = true;
-            }
-          }, KILL_AFTER_TERM);
-        }
-      }, GRACE_AFTER_JSON);
-    }
-
-    const incr = extractFirstJsonIncremental();
-
-    const rejectOnce = (e: Error) => {
-      clearTimeout(timeout);
-      if (graceTimer) clearTimeout(graceTimer);
-      // Persist logs on error and KEEP run dir
-      try {
-        writeFileSync(join(work, 'child.stdout'), out, 'utf8');
-        writeFileSync(join(work, 'child.stderr'), err, 'utf8');
-      } catch {
-        /* empty */
-      }
-      rejectP(e);
-    };
-
-    // ---- wire streams ----
-    child.stdout!.setEncoding('utf8');
-    child.stderr!.setEncoding('utf8');
-
-    child.stdout!.on('data', (c: string) => {
-      out += c;
-      totalBytes += Buffer.byteLength(c);
-      if (totalBytes > MAX_BYTES) {
-        killTree(child, true);
-        return rejectOnce(new Error('Tool produced too much output; limit is 10MB'));
-      }
-      if (parsed == null) {
-        const got = incr.push(c);
-        if (got != null) {
-          parsed = got;
-          startGrace(); // start grace-after-JSON window
-        }
-      }
-    });
-
-    child.stderr!.on('data', (c: string) => {
-      err += c;
-      totalBytes += Buffer.byteLength(c);
-      // TODO:
-      // if (opts.verbose) {
-      //   // tee to host logs if desired
-      //   for (const line of c.split(/\r?\n/)) {
-      //     if (line) console.error(`[tool] ${line}`);
-      //   }
-      // }
-      if (totalBytes > MAX_BYTES) {
-        killTree(child, true);
-        return rejectOnce(new Error('Tool produced too much output; limit is 10MB'));
-      }
-    });
-
-    child.on('error', (e) => {
-      rejectOnce(e as Error);
-    });
-
-    child.on('close', (code) => {
-      clearTimeout(timeout);
-      if (graceTimer) clearTimeout(graceTimer);
-
-      const runnerForcedExit = sentTERM || sentKILL;
-
-      // Prefer the streaming-parsed JSON; if none and exit 0, last-chance parse
-      if (parsed == null && code === 0) {
-        try {
-          parsed = JSON.parse(out.trim());
-        } catch {
-          // keep run dir for inspection
-          // TODO:
-          // try {
-          //   writeFileSync(join(workDir, "child.stdout"), out, "utf8");
-          //   writeFileSync(join(workDir, "child.stderr"), err, "utf8");
-          // } catch {}
-          return rejectP(
-            new Error(`Failed to parse tool JSON output.\nStderr:\n${err}\nStdout:\n${out}`),
-          );
-        }
-      }
-
-      if (code !== 0 && !runnerForcedExit) {
-        // Child failed on its own → persist logs & raise
-        try {
-          writeFileSync(join(work, 'child.stdout'), out, 'utf8');
-          writeFileSync(join(work, 'child.stderr'), err, 'utf8');
-        } catch {
-          /* empty */
-        }
-        const tail = err.slice(-4000);
-        return rejectP(new Error(`Tool exited with code ${code}. Stderr (tail):\n${tail}`));
-      }
-
-      if (parsed == null) {
-        // Shouldn't happen if we killed after JSON; keep logs
-        // TODO:
-        // try {
-        //   writeFileSync(join(workDir, "child.stdout"), out, "utf8");
-        //   writeFileSync(join(workDir, "child.stderr"), err, "utf8");
-        // } catch {
-        // }
-        return rejectP(
-          new Error(`Tool did not produce valid JSON.\nStderr:\n${err}\nStdout:\n${out}`),
-        );
-      }
-
-      // Success: cleanup and return parsed JSON
-      try {
-        rmSync(work, { recursive: true, force: true });
-      } catch {
-        /* empty */
-      }
-      resolveP(parsed as JsonValue);
-    });
-
-    try {
-      child.stdin!.end(JSON.stringify(payload));
-    } catch {
-      // ignore; child may have already died
-    }
-  });
-}
-
-function extractFirstJsonIncremental() {
-  let buf = '';
-  let depth = 0;
-  let start = -1;
-  return {
-    push(chunk: string): unknown | null {
-      buf += chunk;
-      for (let i = 0; i < chunk.length; i++) {
-        const ch = buf.charAt(buf.length - chunk.length + i);
-        if (ch === '{') {
-          if (depth === 0) start = buf.length - chunk.length + i;
-          depth++;
-        } else if (ch === '}') {
-          if (depth > 0) {
-            depth--;
-            if (depth === 0 && start >= 0) {
-              const slice = buf.slice(start, buf.length - chunk.length + i + 1);
-              try {
-                return JSON.parse(slice);
-              } catch {
-                // keep scanning
-              }
-            }
-          }
-        }
-      }
-      return null;
-    },
-    fullText() {
-      return buf;
-    },
-  };
-}
-
-function killTree(child: import('node:child_process').ChildProcess, hard = false) {
-  try {
-    if (platform() === 'win32') {
-      // Best-effort: taskkill the whole tree
-      spawnSync('taskkill', ['/PID', String(child.pid), '/T', hard ? '/F' : ''].filter(Boolean), {
-        stdio: 'ignore',
-      });
-      try {
-        child.kill(hard ? 'SIGKILL' : 'SIGTERM');
-      } catch {
-        /* empty */
-      }
-    } else {
-      // POSIX: send to process group (we use detached: true)
-      try {
-        process.kill(-child.pid!, hard ? 'SIGKILL' : 'SIGTERM');
-      } catch {
-        /* empty */
-      }
-      try {
-        child.kill(hard ? 'SIGKILL' : 'SIGTERM');
-      } catch {
-        /* empty */
-      }
-    }
-  } catch {
-    /* empty */
-  }
-}
-
-// Overloads:
 export async function load(
   spec: string,
   options?: Omit<LoadOptions, 'withMeta'> & { withMeta?: false },
@@ -2165,56 +1766,24 @@ export async function load(spec: string, options: LoadOptions = {}): Promise<Loa
   }
   const manifest = readManifest(manifestPath);
 
-  const ep = manifest.entrypoint;
-  dprint(`resolved root=${root}`);
-  dprint(`manifest=${manifestPath}`);
-  dprint(`entry.command="${ep['command']}" args=${ep.args ?? []}`);
-
-  const env = ep.env ?? {};
-
-  // enforce expected/required environment
-  const expectedEnv = manifest.environment;
-  const varsObj = expectedEnv?.vars ?? {};
-  const hasVars = varsObj && typeof varsObj === 'object' && Object.values(varsObj).length > 0;
-  if (hasVars) {
-    dprint(`tool-defined environment=${JSON.stringify(manifest.environment)}`);
-
-    Object.entries(varsObj).forEach(([k, v]) => {
-      if (v.required && !v.default && (!options.env || !(k in options.env))) {
-        throw new Error(
-          `Missing environment variable: ${k}. ${k} is required and has no default value.`,
-        );
-      } else if (v.default && (!options.env || !(k in options.env))) {
-        // set default
-        options.env = options.env || {};
-        options.env[k] = v.default;
-      }
-    });
+  const env = { ...options.env };
+  const effective = { ...process.env, ...manifest.entrypoint.env, ...env };
+  for (const [key, declaration] of Object.entries(manifest.environment?.vars ?? {})) {
+    if (!(key in effective) && declaration.default !== undefined) {
+      env[key] = declaration.default;
+      effective[key] = declaration.default;
+    }
+    if (declaration.required && !(key in effective)) {
+      throw new Error(
+        `Missing environment variable: ${key}. ${key} is required and has no default value.`,
+      );
+    }
   }
-
-  const resolvedCmd = resolveInterpreterCommand(
-    ep.command,
-    env,
-    options.env,
-    manifest.runtime?.type,
-  );
-
-  // enforce interpreter whitelist and available
-  assertAllowedInterpreter(resolvedCmd);
-  assertInterpreterAvailable(resolvedCmd, env, options.env ?? {});
-
-  // enforce interpreter and runtime compatability
-  if (manifest.runtime) {
-    assertInterpreterMatchesRuntime(resolvedCmd, manifest.runtime);
-  }
-
-  const timeoutMs = options.timeoutMs ?? manifest.entrypoint?.timeout_ms ?? DEFAULT_TIMEOUT_MS;
-
-  // pass the resolved command to the spawner by shadowing the entry
-  const entryForSpawn = { ...manifest.entrypoint, command: resolvedCmd };
-
-  const func = async (input: JsonValue) =>
-    spawnOnce(root, entryForSpawn, input, { timeoutMs, env: options.env });
+  const timeoutMs = options.timeoutMs ?? manifest.entrypoint.timeout_ms ?? DEFAULT_TIMEOUT_MS;
+  const project = findProjectRoot(process.cwd());
+  const exactSpec = `${spec.slice(0, spec.lastIndexOf('@'))}@${manifest.version}`;
+  const func = (input: JsonValue) =>
+    invoke(project, root, exactSpec, input, timeoutMs, env, manifest.entrypoint.env);
 
   if (options.withMeta) {
     const meta: ToolMeta = {

@@ -493,7 +493,7 @@ describe('agentpm node sdk - loadAgent', () => {
 
     expect(loaded.manifest.kind).toBe('agent');
     expect(loaded.manifest.name).toBe('support-agent');
-    expect(loaded.root).toContain('.agentpm/agents');
+    expect(loaded.root).toBe(join(agentsDir, '@zack', 'support-agent', '0.1.0'));
     expect(loaded.resolvedTools).toEqual([
       {
         packageKey: 'tool:@zack/capitalize@0.1.0',
@@ -501,8 +501,8 @@ describe('agentpm node sdk - loadAgent', () => {
         name: '@zack/capitalize',
         version: '0.1.0',
         integrity: 'sha256-tool',
-        root: expect.stringContaining('.agentpm/tools'),
-        manifestPath: expect.stringContaining('.agentpm/tools'),
+        root: join(toolsDir, '@zack', 'capitalize', '0.1.0'),
+        manifestPath: join(toolsDir, '@zack', 'capitalize', '0.1.0', 'agent.json'),
       },
     ]);
     expect(loaded.resolvedSkills).toEqual([
@@ -512,8 +512,8 @@ describe('agentpm node sdk - loadAgent', () => {
         name: '@zack/triage-skill',
         version: '0.1.0',
         integrity: 'sha256-skill',
-        root: expect.stringContaining('.agentpm/skills'),
-        manifestPath: expect.stringContaining('.agentpm/skills'),
+        root: join(skillsDir, '@zack', 'triage-skill', '0.1.0'),
+        manifestPath: join(skillsDir, '@zack', 'triage-skill', '0.1.0', 'agent.json'),
       },
     ]);
     expect(loaded.resolvedKnowledge).toEqual([
@@ -524,8 +524,8 @@ describe('agentpm node sdk - loadAgent', () => {
         version: '0.1.0',
         integrity: 'sha256-knowledge',
         mode: 'vector',
-        root: expect.stringContaining('.agentpm/knowledge'),
-        manifestPath: expect.stringContaining('.agentpm/knowledge'),
+        root: join(knowledgeDir, '@zack', 'python-docs', '0.1.0'),
+        manifestPath: join(knowledgeDir, '@zack', 'python-docs', '0.1.0', 'agent.json'),
       },
     ]);
     expect(loaded.resolvedMemory).toEqual([
@@ -535,8 +535,8 @@ describe('agentpm node sdk - loadAgent', () => {
         name: '@zack/profile-memory',
         version: '0.1.0',
         integrity: 'sha256-memory',
-        root: expect.stringContaining('.agentpm/memory'),
-        manifestPath: expect.stringContaining('.agentpm/memory'),
+        root: join(memoryDir, '@zack', 'profile-memory', '0.1.0'),
+        manifestPath: join(memoryDir, '@zack', 'profile-memory', '0.1.0', 'agent.json'),
       },
     ]);
     expect(loaded.resolvedProfiles).toEqual([
@@ -546,8 +546,8 @@ describe('agentpm node sdk - loadAgent', () => {
         name: '@zack/support-style',
         version: '0.1.0',
         integrity: 'sha256-profile',
-        root: expect.stringContaining('.agentpm/profiles'),
-        manifestPath: expect.stringContaining('.agentpm/profiles'),
+        root: join(profileDir, '@zack', 'support-style', '0.1.0'),
+        manifestPath: join(profileDir, '@zack', 'support-style', '0.1.0', 'agent.json'),
       },
     ]);
     expect(loaded.resolvedLoop).toEqual({
@@ -556,8 +556,8 @@ describe('agentpm node sdk - loadAgent', () => {
       name: '@zack/incident-response-loop',
       version: '0.3.0',
       integrity: 'sha256-loop',
-      root: expect.stringContaining('.agentpm/loops'),
-      manifestPath: expect.stringContaining('.agentpm/loops'),
+      root: join(loopDir, '@zack', 'incident-response-loop', '0.3.0'),
+      manifestPath: join(loopDir, '@zack', 'incident-response-loop', '0.3.0', 'agent.json'),
     });
     expect(loaded.manifest.loop).toBe('@zack/incident-response-loop');
     expect(loaded.manifest.bindings).toEqual({

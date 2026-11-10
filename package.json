@@ -1,6 +1,6 @@
 {
   "name": "@agentpm/sdk",
-  "version": "0.1.16",
+  "version": "0.1.17",
   "description": "AgentPM™ Node SDK",
   "license": "MIT",
   "author": "AgentPM™",
@@ -55,7 +55,8 @@
     "format": "prettier --check .",
     "format:fix": "prettier --write .",
     "prepare": "husky",
-    "prepublishOnly": "pnpm build && pnpm test && pnpm lint && pnpm format"
+    "prepublishOnly": "pnpm build && pnpm test && pnpm lint && pnpm format",
+    "typecheck": "tsc --noEmit"
   },
   "lint-staged": {
     "*.{ts,js}": [

@@ -83,9 +83,7 @@ describe('agentpm node sdk - loadKnowledge', () => {
     expect(loaded.kind).toBe('knowledge');
     expect(loaded.knowledge.mode).toBe('context');
     expect(loaded.documentPaths).toEqual([
-      expect.stringContaining(
-        '.agentpm/knowledge/@zack/support-playbook/0.1.0/knowledge/docs/context.md',
-      ),
+      join(knowledgeDir, '@zack', 'support-playbook', '0.1.0', 'knowledge', 'docs', 'context.md'),
     ]);
     expect(loaded.chunksPath).toBeNull();
     expect(loaded.indexPaths).toEqual([]);
@@ -98,10 +96,18 @@ describe('agentpm node sdk - loadKnowledge', () => {
 
     expect(loaded.kind).toBe('knowledge');
     expect(loaded.knowledge.mode).toBe('vector');
-    expect(loaded.chunksPath).toContain('/knowledge/chunks.jsonl');
-    expect(loaded.sourcesPath).toContain('/knowledge/sources.jsonl');
-    expect(loaded.vectorsPath).toContain('/knowledge/embeddings/default.f32');
-    expect(loaded.indexPaths).toEqual([expect.stringContaining('/knowledge/indexes/default')]);
+    expect(loaded.chunksPath).toBe(
+      join(knowledgeDir, '@zack', 'python-docs', '0.1.0', 'knowledge', 'chunks.jsonl'),
+    );
+    expect(loaded.sourcesPath).toBe(
+      join(knowledgeDir, '@zack', 'python-docs', '0.1.0', 'knowledge', 'sources.jsonl'),
+    );
+    expect(loaded.vectorsPath).toBe(
+      join(knowledgeDir, '@zack', 'python-docs', '0.1.0', 'knowledge', 'embeddings/default.f32'),
+    );
+    expect(loaded.indexPaths).toEqual([
+      join(knowledgeDir, '@zack', 'python-docs', '0.1.0', 'knowledge', 'indexes', 'default'),
+    ]);
   });
 
   it('fails with a clear error when the knowledge package is not installed', async () => {

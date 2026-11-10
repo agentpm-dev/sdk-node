@@ -6,3 +6,6 @@ coverage
 .idea/
 *.tgz
 run/
+
+# Local AgentPM installations, environments and run logs
+.agentpm/
