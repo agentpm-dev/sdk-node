@@ -56,7 +56,7 @@ let originalCwd: string;
 
 beforeEach(() => {
   originalCwd = process.cwd();
-  project = realpathSync(mkdtempSync(join(tmpdir(), 'sdk bridge with spaces ')));
+  project = realpathSync.native(mkdtempSync(join(tmpdir(), 'sdk bridge with spaces ')));
   vi.stubEnv('AGENTPM', 'mock-agentpm');
   vi.stubEnv('MOCK_CLI_CAPTURE', join(project, 'capture.json'));
 });
@@ -105,6 +105,8 @@ describe('CLI delegation', () => {
       env: { LAYER: 'caller', MOCK_SECRET_TOKEN: 'sdk-secret-token' },
     });
     process.chdir(originalCwd);
+    // Exercise UTF-8 transport even when the Python mock defaults to a Windows code page.
+    vi.stubEnv('PYTHONIOENCODING', 'cp1252');
     const payload = { message: 'quotes " unicode 😀', nested: [1, false] };
     expect(await loaded.func(payload)).toEqual(payload);
     const capture = JSON.parse(readFileSync(join(project, 'capture.json'), 'utf8'));
@@ -116,8 +118,10 @@ describe('CLI delegation', () => {
       '--timeout-ms',
       '120000',
     ]);
-    expect(capture.cwd).toBe(project);
-    expect(capture.request.tool_directory).toBe(join(project, '.agentpm/tools/fixture/tool/0.1.9'));
+    expect(realpathSync.native(capture.cwd)).toBe(project);
+    expect(realpathSync.native(capture.request.tool_directory)).toBe(
+      realpathSync.native(join(project, '.agentpm/tools/fixture/tool/0.1.9')),
+    );
     expect(capture.request.input).toEqual(payload);
     expect(capture.request.environment.LAYER).toBe('caller');
     expect(JSON.stringify(capture.argv)).not.toContain('sdk-secret-token');

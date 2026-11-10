@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -147,7 +147,7 @@ function writeInstalledMemory(baseDir: string, spec: string) {
 }
 
 describe('agentpm node sdk - loadMemory', () => {
-  const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-memory-test-'));
+  const tmp = realpathSync(mkdtempSync(join(tmpdir(), 'agentpm-sdk-memory-test-')));
   const memoryDir = join(tmp, '.agentpm', 'memory');
 
   beforeAll(() => {
@@ -169,9 +169,7 @@ describe('agentpm node sdk - loadMemory', () => {
     expect(loaded.build.type).toBe('agentpm-memory-contracts');
     expect(loaded.contractIndex.type).toBe('agentpm-memory-contract-index');
     expect(loaded.sourceSchemaPaths).toEqual([
-      expect.stringContaining(
-        '.agentpm/memory/@zack/profile-memory/0.1.0/schemas/user-preference.schema.json',
-      ),
+      join(memoryDir, '@zack', 'profile-memory', '0.1.0', 'schemas/user-preference.schema.json'),
     ]);
     expect(loaded.contracts).toEqual([
       {
@@ -179,11 +177,19 @@ describe('agentpm node sdk - loadMemory', () => {
         recordType: 'user_preference',
         schemaVersion: '1.0.0',
         model: 'document',
-        sourceSchemaPath: expect.stringContaining(
-          '.agentpm/memory/@zack/profile-memory/0.1.0/schemas/user-preference.schema.json',
+        sourceSchemaPath: join(
+          memoryDir,
+          '@zack',
+          'profile-memory',
+          '0.1.0',
+          'schemas/user-preference.schema.json',
         ),
-        path: expect.stringContaining(
-          '.agentpm/memory/@zack/profile-memory/0.1.0/memory/contracts/profile.user_preference.schema.json',
+        path: join(
+          memoryDir,
+          '@zack',
+          'profile-memory',
+          '0.1.0',
+          'memory/contracts/profile.user_preference.schema.json',
         ),
         sha256: 'sha256:contract',
       },

@@ -150,7 +150,9 @@ describe('agentpm node sdk - loadSkill', () => {
       lockfileOverride: lockfilePath,
     });
 
-    expect(loaded.entrypointPath).toContain('.agentpm/skills');
+    expect(loaded.entrypointPath).toBe(
+      join(skillsDir, '@zack', 'triage-playbook', '0.1.0', 'SKILL.md'),
+    );
     expect(readFileSync(loaded.entrypointPath, 'utf8')).toContain('Use the checklist.');
     expect(loaded.resolvedTools).toEqual([
       {
@@ -159,8 +161,8 @@ describe('agentpm node sdk - loadSkill', () => {
         name: '@zack/capitalize',
         version: '0.1.0',
         integrity: 'sha256-tool',
-        root: expect.stringContaining('.agentpm/tools'),
-        manifestPath: expect.stringContaining('.agentpm/tools'),
+        root: join(toolsDir, '@zack', 'capitalize', '0.1.0'),
+        manifestPath: join(toolsDir, '@zack', 'capitalize', '0.1.0', 'agent.json'),
       },
     ]);
   });
@@ -223,8 +225,8 @@ describe('agentpm node sdk - loadSkill', () => {
         name: '@zack/capitalize',
         version: '0.1.0',
         integrity: 'sha256-tool',
-        root: expect.stringContaining('.agentpm/tools'),
-        manifestPath: expect.stringContaining('.agentpm/tools'),
+        root: join(toolsDir, '@zack', 'capitalize', '0.1.0'),
+        manifestPath: join(toolsDir, '@zack', 'capitalize', '0.1.0', 'agent.json'),
       },
     ]);
   });
