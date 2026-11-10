@@ -11,6 +11,7 @@ import {
   serveKnowledgeRuntimeProcess,
   serveMemoryRuntimeProcess,
   type AfterKnowledgeRetrievalHookHandler,
+  type HarnessJsonValue,
   type BeforeKnowledgeRequestHookHandler,
   type BeforeMemoryOperationHookHandler,
   type BeforeMemoryReadHookHandler,
@@ -117,8 +118,10 @@ describe('HarnessClient', () => {
     await expect(client.shutdown()).resolves.toEqual({ shutdown: true });
   });
 
-  it('passes installed Agent refs through as the harness positional selector', async () => {
-    const command = makeFakeAgentpmCommand(`
+  it.skipIf(process.platform === 'win32')(
+    'passes installed Agent refs through as the harness positional selector',
+    async () => {
+      const command = makeFakeAgentpmCommand(`
       import readline from 'node:readline';
       const protocol = 'agentpm-harness-machine';
       const write = (frame) => process.stdout.write(JSON.stringify({ protocol, version: 1, ...frame }) + '\\n');
@@ -130,18 +133,19 @@ describe('HarnessClient', () => {
         }
       });
     `);
-    cleanup.push(resolve(command, '..'));
+      cleanup.push(resolve(command, '..'));
 
-    const client = new HarnessClient({
-      agentpmPath: command,
-      agent: '@zack/support-agent@0.1.0',
-    });
+      const client = new HarnessClient({
+        agentpmPath: command,
+        agent: '@zack/support-agent@0.1.0',
+      });
 
-    await expect(client.initialize()).resolves.toMatchObject({
-      argv: ['harness', '@zack/support-agent@0.1.0', '--machine'],
-    });
-    client.stop();
-  });
+      await expect(client.initialize()).resolves.toMatchObject({
+        argv: ['harness', '@zack/support-agent@0.1.0', '--machine'],
+      });
+      client.stop();
+    },
+  );
 
   it('iterates buffered and future events once in order', async () => {
     const script = makeFakeHarness(`
@@ -368,7 +372,7 @@ describe('HarnessClient', () => {
         content: {
           original: input.content,
           operation: input.operation,
-          record_id: input.record_id,
+          record_id: input.record_id ?? null,
         },
       },
     });
@@ -785,7 +789,7 @@ describe('HarnessClient', () => {
       let modelCalls = 0;
 
       client
-        .registerModelProvider('company-model', () => {
+        .registerModelProvider('company-model', (): HarnessJsonValue => {
           calls.push('model');
           modelCalls += 1;
           if (modelCalls === 1) {

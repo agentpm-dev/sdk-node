@@ -105,6 +105,7 @@ function makeFailingToolPackage(baseDir: string, spec: string) {
 }
 
 describe('agentpm node sdk - load + toLangChainTool', () => {
+  const originalCwd = process.cwd();
   const tmp = mkdtempSync(join(tmpdir(), 'agentpm-sdk-test-'));
   const skillsDir = join(tmp, 'skills');
   const knowledgeDir = join(tmp, 'knowledge');
@@ -119,6 +120,7 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   const loopSpec = '@zack/incident-response-loop@0.1.0';
 
   beforeAll(() => {
+    process.chdir(tmp);
     makeToolPackage(tmp, okSpec);
     makeToolPackage(tmp, bashCommandSpec, 'bash');
     makeFailingToolPackage(tmp, failSpec);
@@ -343,6 +345,7 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   });
 
   afterAll(() => {
+    process.chdir(originalCwd);
     delete process.env.AGENTPM_SKILL_DIR;
     delete process.env.AGENTPM_KNOWLEDGE_DIR;
     delete process.env.AGENTPM_MEMORY_DIR;
@@ -362,9 +365,8 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
   });
 
   it('throws a helpful error when unsupported entrypoint command is provided', async () => {
-    await expect(load(bashCommandSpec, { toolDirOverride: tmp })).rejects.toThrow(
-      /Unsupported agent\.json\.entrypoint\.command/,
-    );
+    const tool = await load(bashCommandSpec, { toolDirOverride: tmp });
+    await expect(tool({ text: 'test' })).rejects.toThrow(/unsupported entrypoint.command/);
   });
 
   it('withMeta returns func + meta', async () => {
@@ -419,7 +421,7 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
       toolDirOverride: tmp,
     });
 
-    await expect(failing({})).rejects.toThrow(/exited with code 2/i);
+    await expect(failing({})).rejects.toThrow(/exited unsuccessfully: 2/i);
   });
 
   it('throws a helpful error when required env variables are missing', async () => {
@@ -463,4 +465,36 @@ describe('agentpm node sdk - load + toLangChainTool', () => {
       /use loadKnowledge/i,
     );
   });
+});
+
+it('also delegates legacy vendored Python through the CLI', async () => {
+  const project = mkdtempSync(join(tmpdir(), 'sdk-vendored-'));
+  const cwd = process.cwd();
+  try {
+    const root = join(project, '.agentpm/tools/zack/vendored/1.0.0');
+    mkdirSync(join(root, '_vendor'), { recursive: true });
+    writeFileSync(join(root, '_vendor/dep.py'), 'VALUE="vendored"');
+    writeFileSync(
+      join(root, 'tool.py'),
+      'import sys,json\nsys.path.insert(0,"_vendor")\nfrom dep import VALUE\njson.load(sys.stdin)\nprint(json.dumps({"value":VALUE}))',
+    );
+    writeFileSync(
+      join(root, 'agent.json'),
+      JSON.stringify({
+        kind: 'tool',
+        name: 'vendored',
+        version: '1.0.0',
+        runtime: { type: 'python', version: '3.10' },
+        entrypoint: { command: 'python3', args: ['tool.py'] },
+        inputs: { type: 'object' },
+        outputs: { type: 'object' },
+      }),
+    );
+    process.chdir(project);
+    const invoke = await load('@zack/vendored@1.0.0');
+    expect(await invoke({})).toEqual({ value: 'vendored' });
+  } finally {
+    process.chdir(cwd);
+    rmSync(project, { recursive: true, force: true });
+  }
 });

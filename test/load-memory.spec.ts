@@ -164,7 +164,7 @@ describe('agentpm node sdk - loadMemory', () => {
     });
 
     expect(loaded.kind).toBe('memory');
-    expect(loaded.memory.spaces.profile.model).toBe('document');
+    expect(loaded.memory.spaces.profile?.model).toBe('document');
     expect(loaded.memory.operations?.refresh_profile?.output_mode).toBe('replace_input');
     expect(loaded.build.type).toBe('agentpm-memory-contracts');
     expect(loaded.contractIndex.type).toBe('agentpm-memory-contract-index');

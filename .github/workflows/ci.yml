@@ -1,51 +1,85 @@
 name: CI
-
 on:
   push:
     branches: [main]
   pull_request:
-
+  workflow_dispatch:
+    inputs:
+      cli_ref:
+        description: Compatible CLI ref (>=0.1.43); use the proposed ref before CLI main is updated
+        default: main
+        type: string
+permissions:
+  contents: read
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
-
 jobs:
   build-test-lint:
-    runs-on: ubuntu-latest
-
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, macos-15-intel, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        working-directory: sdk
+        shell: bash
     steps:
-      - name: Checkout
+      - name: Checkout SDK
         uses: actions/checkout@v4
-
-      - name: Setup pnpm
-        uses: pnpm/action-setup@v4
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
+        with:
+          path: sdk
+      - name: Checkout compatible CLI contract and runner
+        uses: actions/checkout@v4
+        with:
+          repository: agentpm-dev/cli
+          ref: ${{ inputs.cli_ref || vars.AGENTPM_CLI_REF || 'main' }}
+          path: cli
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build the authoritative CLI
+        working-directory: cli
+        run: cargo build -p agentpm-cli
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.13.5'
+          python-version: ${{ matrix.python || '3.11' }}
+          enable-cache: false
+      - name: Select test executables and check shared fixtures
+        shell: bash
+        working-directory: sdk
+        run: |
+          python - <<'PYCODE'
+          import os, pathlib, platform, shutil, subprocess, sys
+          print('Native SDK host:', platform.system(), platform.machine(), sys.version.split()[0])
+          cli = pathlib.Path('../cli').resolve()
+          binary = cli / 'target/debug' / ('agentpm.exe' if os.name == 'nt' else 'agentpm')
+          with open(os.environ['GITHUB_ENV'], 'a') as out:
+              for name, value in {'AGENTPM': binary, 'AGENTPM_TEST_CLI': binary, 'AGENTPM_TEST_UV': shutil.which('uv'), 'AGENTPM_TEST_PYTHON': sys.executable, 'AGENTPM_PYTHON': sys.executable, 'AGENTPM_TELEMETRY': '0'}.items():
+                  print(f'{name}={value}', file=out)
+          subprocess.run([sys.executable, str(cli/'scripts/check_sdk_contract.py'), '--cli-root', str(cli), '--sdk-root', str(pathlib.Path.cwd())], check=True)
+          PYCODE
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.15.0
+      - uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: pnpm
-
-      - name: Install deps
-        run: pnpm install --frozen-lockfile
-
-      - name: Format check
-        run: pnpm format
-
-      - name: Lint
-        run: pnpm lint
-
-      - name: Test
+          cache-dependency-path: sdk/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm format
+      - run: pnpm lint
+      - run: pnpm typecheck
+      - name: Test, including native-dependency SDK invocation
         run: pnpm test
-
-      - name: Build
-        run: pnpm build
-
-      - name: Pack (smoke test what would be published)
-        run: pnpm pack
-
-      - name: Upload tarball artifact
-        uses: actions/upload-artifact@v4
+      - run: pnpm build
+      - name: Smoke ESM and CJS exports
+        run: |
+          node --input-type=module -e "import {load, loadAgent} from './dist/index.js'; if(typeof load !== 'function') process.exit(1)"
+          node -e "const {load,loadAgent}=require('./dist/index.cjs'); if(typeof load !== 'function') process.exit(1)"
+      - run: pnpm pack
+      - uses: actions/upload-artifact@v4
         with:
-          name: npm-pack
-          path: '*.tgz'
+          name: npm-pack-${{ matrix.os }}
+          path: sdk/*.tgz
