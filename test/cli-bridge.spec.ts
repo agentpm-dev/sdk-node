@@ -51,6 +51,16 @@ const vectors = JSON.parse(readFileSync(join(fixtures, 'compatibility.json'), 'u
   invalid: { name: string; lock: unknown }[];
   agent: string;
 };
+// Additive v4 metadata is deliberately tolerated by the 0.1.17 reader.
+const extended = JSON.parse(JSON.stringify(vectors.valid.find((v) => v.name === 'v4')!));
+extended.name = 'v4-apds';
+for (const entries of [extended.lock.packages, extended.lock.roots]) {
+  for (const entry of Object.values(entries) as Record<string, unknown>[]) {
+    entry.standard = { id: 'agentpm', version: '1.0.0' };
+    entry.standard_origin = 'legacy_inferred';
+  }
+}
+vectors.valid.push(extended);
 let project: string;
 let originalCwd: string;
 
@@ -95,7 +105,7 @@ describe('CLI delegation', () => {
   it('preserves public shapes, exact selected directory, stdin and caller env without rewriting lock', async () => {
     writeAgent();
     const lock = join(project, 'agent.lock');
-    writeFileSync(lock, JSON.stringify(vectors.valid[2]!.lock));
+    writeFileSync(lock, JSON.stringify(extended.lock));
     const before = readFileSync(lock);
     // Loading captures the project; subsequent cwd changes cannot move execution.
     process.chdir(project);
