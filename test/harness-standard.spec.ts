@@ -1,12 +1,6 @@
 import { spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -55,7 +49,7 @@ it.each([undefined, [], [standard], null, [{ id: 'agentpm' }], 'malformed-report
       await client.shutdown();
     } finally {
       client.stop();
-      rmSync(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   },
 );
@@ -89,7 +83,7 @@ it.skipIf(!cli).each(['ready', 'no-loop', 'missing-model', 'legacy', 'unsupporte
       await client.shutdown();
     } finally {
       client.stop();
-      rmSync(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   },
 );
@@ -164,8 +158,12 @@ it.skipIf(!cli)(
           };
         });
         try {
+          const initialized = await client.initialize();
+          expect(initialized.preflight, JSON.stringify(initialized.preflight)).toMatchObject({
+            local_readiness: 'ready',
+          });
           const result = await client.run('Check exact versions.');
-          expect(result.status).toBe('ended');
+          expect(result.status, JSON.stringify(result)).toBe('ended');
           expect(calls).toBe(3);
           await client.shutdown();
         } finally {
@@ -180,7 +178,7 @@ it.skipIf(!cli)(
           .map((line) => JSON.parse(line)),
       ).toEqual([{ version: '1.0.0' }, { version: '2.0.0' }]);
     } finally {
-      rmSync(root, { recursive: true, force: true });
+      await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
     }
   },
   30000,
