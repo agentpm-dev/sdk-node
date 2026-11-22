@@ -30,6 +30,12 @@ can be loaded from a project containing just `agent.lock` and `.agentpm`; no app
 `agent.json` is required. Exact locked references remain exact when other
 versions coexist. A local author Tool root is not an installed Agent.
 
+SDK 0.1.17 accepts the additive v4 `standard` and `standard_origin` fields.
+For locks containing these fields, use **CLI 0.1.47+** on developer machines,
+CI and container images. Older CLIs can report an `unknown field` error;
+upgrade the CLI instead of removing provenance. `legacy_inferred` records
+historical interpretation, not an authored declaration or conformance result.
+
 Calls follow **app → SDK → `agentpm run --machine` → Tool**. The SDK unwraps the
 CLI result and returns the Tool's original JSON data. A Tool's `ok: false` stays
 ordinary returned data; runner failures raise an exception. Interpreter, schema,
@@ -208,9 +214,32 @@ await harness.shutdown();
 console.log(result);
 ```
 
-`agent` is optional. When set, it is passed to `agentpm harness` as either an installed Agent package ref such as `@zack/support-agent@0.1.0` or a local manifest path such as `./agent.json`; when omitted, Harness uses its normal workspace discovery/default Agent selection. Register host services before starting a run. The SDK launches `agentpm harness --machine`, correlates request/response frames, streams Harness events, and routes host-service callbacks for model providers, embedding providers, Knowledge runtimes, hooks, and approvals.
+`agent` is optional. When set, it is passed to `agentpm harness` as either an installed Agent package ref such as `@zack/support-agent@0.1.0` or a local Agent name recorded in the workspace lock, such as `consumer-1`; when omitted, Harness uses its normal workspace discovery/default Agent selection. Register host services before starting a run. The SDK launches `agentpm harness --machine`, correlates request/response frames, streams Harness events, and routes host-service callbacks for model providers, embedding providers, Knowledge runtimes, hooks, and approvals.
 
 The convenience Hook helpers use contract-specific types. `onBeforeModelRequest` may return `context_sections` and `provider_options`, `onBeforeToolSelection` may return `candidate_ids`, `onBeforeToolCall` may return replacement `arguments`, `onBeforeKnowledgeRequest` may shape the same package request options, and `onAfterKnowledgeRetrieval` may filter/reorder existing results or transform model-visible text while retaining result identity. Direct Memory hook helpers can shape authorized read requests or patch/reject authorized write content before runtime dispatch. A returned object must include `decision: 'continue'` or `decision: 'reject'`; returning `undefined` is treated as an explicit continue with no patch. There is no embedding Hook ID; use `registerEmbeddingProvider` to host query embedding.
+
+Inspect APDS support separately from runtime readiness:
+
+```ts
+const info = await harness.initialize();
+const response = await harness.preflight();
+const report = response.report; // Current CLI response envelope is preserved.
+const standards = await harness.supportedStandards();
+// [{ id: 'agentpm', version: '1.0.0' }] when advertised by the running CLI.
+console.log(info.preflight, report, standards);
+await harness.shutdown();
+```
+
+`initialize().preflight` contains the definition/readiness report; `preflight()`
+retains the CLI's `{ report, mcp_exports }` envelope. `supportedStandards()` reads
+that existing response, also accepting older flat responses. It returns
+`undefined` when an older CLI omits the advertisement and `[]` for an explicitly
+empty list; it never infers support from the unchanged machine protocol version
+`1`. Definition status, Harness support and local readiness remain separate.
+Failed preflight can still be inspected; starting a Run remains blocked.
+Harness uses the selected Agent's exact locked Component versions. A selected
+graph with multiple versions of an actively named Component is reported as a
+Runner limitation rather than choosing an arbitrary installed version.
 
 Host capability advertisement is role-specific. `registerModelProvider` automatically advertises the registry ID as `provider` plus semantic-action, structured-output, multimodal-input, and usage-reporting flags; pass model-specific overrides such as `model` or `context_window_tokens` when known. `registerEmbeddingProvider` registers the `embed` provider contract and advertises supported embedding spaces. `registerKnowledgeRuntime` registers the `retrieve` runtime contract and advertises supported modes/features/package attestations. `registerHostProvider` remains available for lower-level role-specific capability shapes. `onApproval` advertises approval support and optional cancellation support. After initialization, `hostServiceRegistration(role, registryId)` exposes the Harness registration result, including `active: false` and a reason when Harness rejects a registration.
 

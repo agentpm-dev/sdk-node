@@ -48,8 +48,23 @@ export type HarnessEvent = {
   [key: string]: HarnessJsonValue | undefined;
 };
 
+/** Exact APDS identity advertised by the running CLI, distinct from protocol version. */
+export type HarnessSupportedStandard = { id: string; version: string };
+
+export type HarnessPreflightReport = {
+  status?: string;
+  supported_standards?: HarnessSupportedStandard[];
+  apds?: HarnessJsonValue;
+  harness_support?: string;
+  local_readiness?: string;
+  diagnostics?: HarnessJsonValue[];
+};
+
 export type HarnessPreflightResult = {
   status?: string;
+  supported_standards?: HarnessSupportedStandard[];
+  /** Current CLI preflight response envelope; retained without flattening. */
+  report?: HarnessPreflightReport;
   [key: string]: HarnessJsonValue | undefined;
 };
 
@@ -85,7 +100,7 @@ export type HarnessClientOptions = {
   /**
    * Agent selector passed to `agentpm harness`.
    *
-   * This may be a local Agent manifest path, such as `./agent.json`, or an
+   * This may be a local Agent name from the workspace lock, such as `consumer-1`, or an
    * installed Agent package ref, such as `@scope/name@1.2.3`. Omit it to use
    * Harness workspace discovery/default Agent selection.
    */
@@ -845,6 +860,36 @@ export class HarnessClient {
     await this.ensureInitialized();
     await this.registrationFlush;
     return (await this.request('preflight', {})) as HarnessPreflightResult;
+  }
+
+  /** Undefined means the CLI did not advertise support; an empty list means none. */
+  async supportedStandards(): Promise<HarnessSupportedStandard[] | undefined> {
+    const response = await this.preflight();
+    const report = response.report === undefined ? response : response.report;
+    if (report === null || typeof report !== 'object' || Array.isArray(report)) {
+      throw new HarnessProtocolError({
+        code: 'invalid_standard_advertisement',
+        message: 'Harness preflight report must be an object',
+      });
+    }
+    const standards = report.supported_standards;
+    if (standards === undefined) return undefined;
+    if (
+      !Array.isArray(standards) ||
+      !standards.every(
+        (value) =>
+          value !== null &&
+          typeof value === 'object' &&
+          typeof value.id === 'string' &&
+          typeof value.version === 'string',
+      )
+    ) {
+      throw new HarnessProtocolError({
+        code: 'invalid_standard_advertisement',
+        message: 'Harness supported_standards must contain exact id/version objects',
+      });
+    }
+    return standards;
   }
 
   async run(
